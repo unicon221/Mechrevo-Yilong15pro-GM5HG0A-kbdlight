@@ -1,0 +1,11 @@
+# ---- 本地逆向调查产物，不发布 ----
+pe-build/            # WinPE 构建目录（含第三方 ISO 与厂商软件）
+PE-CAPTURE.md        # WinPE 抓取流程笔记
+log/                 # EC 抓取日志
+snapshots/           # EC 寄存器快照
+__pycache__/
+*.pyc
+*.bak
+*.sha256
+*.iso
+*.wim
