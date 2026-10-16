@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-kbdlight — 机械革命翼龙15Pro (Uniwill GM5HG0A) 键盘 RGB 背光控制
+Yilong15pro-kbdlight — 机械革命翼龙15Pro (Uniwill GM5HG0A) 键盘 RGB 背光控制
 
 既可作命令行工具，也可作 Python 模块导入：
 
     # CLI
-    sudo kbdlight ff0000
-    sudo kbdlight off
-    sudo kbdlight read
+    sudo Yilong15pro-kbdlight ff0000
+    sudo Yilong15pro-kbdlight off
+    sudo Yilong15pro-kbdlight read
 
     # 模块（写操作需要 root，读操作也需要 —— /proc/acpi/call 是 root 私有）
-    import kbdlight
+    import yilong_kbdlight as kbdlight
     kbdlight.set_rgb(0xFF, 0x00, 0x00)     # 设红
     r, g, b = kbdlight.get_rgb()           # 0..255 换算值
     levels  = kbdlight.get_levels()        # 1..50 原始电平
@@ -52,13 +52,13 @@ kbdlight — 机械革命翼龙15Pro (Uniwill GM5HG0A) 键盘 RGB 背光控制
 
 用法
 ----
-    sudo kbdlight RRGGBB            # 设置颜色并点亮
-    sudo kbdlight on                # 点亮（恢复上次颜色或默认色）
-    sudo kbdlight off               # 关闭（电平全 0，完全熄灭）
-    sudo kbdlight brightness 0-255  # 亮度（按比例缩放，保持色相）
-    sudo kbdlight levels R G B      # 直接写 0..50 电平（高级用法）
-    sudo kbdlight read              # 读当前状态（支持 --json）
-    sudo kbdlight demo              # 循环演示颜色
+    sudo Yilong15pro-kbdlight RRGGBB            # 设置颜色并点亮
+    sudo Yilong15pro-kbdlight on                # 点亮（恢复上次颜色或默认色）
+    sudo Yilong15pro-kbdlight off               # 关闭（电平全 0，完全熄灭）
+    sudo Yilong15pro-kbdlight brightness 0-255  # 亮度（按比例缩放，保持色相）
+    sudo Yilong15pro-kbdlight levels R G B      # 直接写 0..50 电平（高级用法）
+    sudo Yilong15pro-kbdlight read              # 读当前状态（支持 --json）
+    sudo Yilong15pro-kbdlight demo              # 循环演示颜色
 """
 
 from __future__ import annotations
@@ -136,7 +136,7 @@ LEVEL_MAX = 50         # RGB_LEVEL_MAX = 0x32
 LEVEL_SCALES = 50      # RGB_LEVEL_SCALES = 0x32
 VALUE_TO_LEVEL_RATIO = 5   # RGB_VALUE_TO_LEVEL_RATIO
 
-STATE_FILE = "/run/kbdlight.last"   # 记录上次颜色，供 on 恢复
+STATE_FILE = "/run/Yilong15pro-kbdlight.last"   # 记录上次颜色，供 on 恢复
 
 # GUI 预设色板（0..255 尺度）
 PALETTE = [
@@ -164,7 +164,7 @@ PALETTE = [
 # --------------------------------------------------------------------------
 
 class KbdLightError(Exception):
-    """所有 kbdlight 错误的基类。"""
+    """所有 Yilong15pro-kbdlight 错误的基类。"""
 
 
 class NotRootError(KbdLightError):
@@ -288,7 +288,7 @@ def check_available() -> None:
         raise AcpiCallMissingError(
             f"{ACPI_CALL} 不存在，请先： sudo modprobe acpi_call")
     if os.geteuid() != 0:
-        raise NotRootError("需要 root 权限： sudo kbdlight ...")
+        raise NotRootError("需要 root 权限： sudo Yilong15pro-kbdlight ...")
 
 
 # --------------------------------------------------------------------------
@@ -376,7 +376,7 @@ def off() -> None:
 def on(rgb=None) -> tuple:
     """点亮，返回使用的颜色 (r,g,b)。
 
-    颜色优先级：显式参数 > /run/kbdlight.last > EC 默认色 > 兜底青色。
+    颜色优先级：显式参数 > /run/Yilong15pro-kbdlight.last > EC 默认色 > 兜底青色。
     """
     if rgb is None:
         rgb = load_state()
@@ -578,7 +578,7 @@ def _maybe_reexec_with_sudo(argv) -> None:
     # 找到本脚本的绝对路径
     self_path = os.path.abspath(__file__)
     if not os.path.exists(self_path):
-        self_path = shutil.which("kbdlight") or self_path
+        self_path = shutil.which("Yilong15pro-kbdlight") or self_path
 
     sudo = shutil.which("sudo")
     if sudo:
@@ -613,7 +613,7 @@ def main(argv=None) -> int:
     cmd = raw_cmd.lower()
 
     if raw_cmd in ("-V", "--version") or cmd == "version":
-        print(f"kbdlight {__version__}")
+        print(f"Yilong15pro-kbdlight {__version__}")
         return 0
 
     if raw_cmd in ("-h", "--help") or cmd == "help":
@@ -647,7 +647,7 @@ def main(argv=None) -> int:
 
         elif cmd in ("brightness", "bri", "b"):
             if len(argv) < 2:
-                print("用法: kbdlight brightness 0-255", file=sys.stderr)
+                print("用法: Yilong15pro-kbdlight brightness 0-255", file=sys.stderr)
                 return 1
             level = int(argv[1], 0)
             if not 0 <= level <= 255:
@@ -662,7 +662,7 @@ def main(argv=None) -> int:
 
         elif cmd in ("percent", "pct", "p"):
             if len(argv) < 2:
-                print("用法: kbdlight percent 0-100", file=sys.stderr)
+                print("用法: Yilong15pro-kbdlight percent 0-100", file=sys.stderr)
                 return 1
             pct = float(argv[1])
             rgb = set_percent(pct)
@@ -670,7 +670,7 @@ def main(argv=None) -> int:
 
         elif cmd in ("levels", "lv"):
             if len(argv) < 4:
-                print("用法: kbdlight levels R G B   (每个 0-50)", file=sys.stderr)
+                print("用法: Yilong15pro-kbdlight levels R G B   (每个 0-50)", file=sys.stderr)
                 return 1
             try:
                 lr, lg, lb = (int(argv[1], 0), int(argv[2], 0),

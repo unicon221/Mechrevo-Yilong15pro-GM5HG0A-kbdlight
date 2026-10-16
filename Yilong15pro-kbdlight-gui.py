@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""kbdlight-gui — 机械革命翼龙15Pro 键盘背光图形界面（PySide6 / Qt6）
+"""Yilong15pro-kbdlight-gui — 机械革命翼龙15Pro 键盘背光图形界面（PySide6 / Qt6）
 
 架构（2026-10-16 改版）：
     ★ 本进程以【普通用户】运行，完全融入桌面会话（KDE/Wayland）。
-      所有 EC 读写通过 `sudo kbdlight` 子进程转发（/etc/sudoers.d/kbdlight
+      所有 EC 读写通过 `sudo Yilong15pro-kbdlight` 子进程转发（/etc/sudoers.d/Yilong15pro-kbdlight
       已配 NOPASSWD 免密）。
 
     为什么不用 root 跑整个 GUI：
@@ -13,16 +13,16 @@
 
     代价：每次读写多一次进程启动（约 20 ms），对 2 秒轮询完全无感。
 
-    kbdlight.py 的纯计算函数（to_level / from_levels / rgb_to_hex /
+    Yilong15pro-kbdlight.py 的纯计算函数（to_level / from_levels / rgb_to_hex /
     PALETTE / 常量）直接 import，不需要 root，零开销。
 
 前提：
-    /etc/sudoers.d/kbdlight 里给当前用户 NOPASSWD 运行 kbdlight
+    /etc/sudoers.d/Yilong15pro-kbdlight 里给当前用户 NOPASSWD 运行 Yilong15pro-kbdlight
     （否则每一步都会弹密码框）。
 
 用法：
-    kbdlight-gui                 # 普通用户直接运行
-    kbdlight-gui --read-only     # 只读（不执行任何 sudo 写操作）
+    Yilong15pro-kbdlight-gui                 # 普通用户直接运行
+    Yilong15pro-kbdlight-gui --read-only     # 只读（不执行任何 sudo 写操作）
 """
 
 from __future__ import annotations
@@ -35,37 +35,54 @@ import shutil
 import subprocess
 import sys
 
-# 让 GUI 能在源码目录直接运行；安装到 /usr/local/bin 后也能找到模块。
-try:
-    import kbdlight
-except ImportError:
-    # 1) 同目录（源码目录 或 /usr/local/bin）
-    _here = os.path.dirname(os.path.abspath(__file__))
-    sys.path.insert(0, _here)
+# ---------------------------------------------------------------------------
+# 导入主模块
+#
+# 支持三种安装形式：
+#   1) 源码目录        —— 同目录的 Yilong15pro-kbdlight.py
+#   2) Arch 包        —— /usr/lib/Yilong15pro-kbdlight/yilong_kbdlight.py
+#   3) install.sh     —— /usr/local/bin/Yilong15pro-kbdlight（无 .py 后缀）
+# 后两种无 .py 后缀或不在 sys.path，所以用 importlib 按路径加载。
+# ---------------------------------------------------------------------------
+
+def _load_kbdlight():
+    # 先试常规 import（包已把 yilong_kbdlight.py 放进 site-packages 时用）
     try:
-        import kbdlight
+        import yilong_kbdlight          # noqa: F401
+        return yilong_kbdlight
     except ImportError:
-        # 2) /usr/local/bin/kbdlight 是个无 .py 后缀的文件，python 找不到，
-        #    用 importlib 按路径加载。
-        import importlib.machinery
-        import importlib.util
-        _cands = [os.path.join(_here, "kbdlight"),
-                  "/usr/local/bin/kbdlight",
-                  os.path.join(_here, "kbdlight.py")]
-        for _c in _cands:
-            if os.path.isfile(_c):
-                _spec = importlib.util.spec_from_file_location(
-                    "kbdlight", _c,
-                    loader=importlib.machinery.SourceFileLoader(
-                        "kbdlight", _c))
-                kbdlight = importlib.util.module_from_spec(_spec)
-                sys.modules["kbdlight"] = kbdlight
-                _spec.loader.exec_module(kbdlight)
-                break
-        else:
-            raise ImportError(
-                "找不到 kbdlight 模块。请先安装：\n"
-                "    sudo install -m 755 kbdlight.py /usr/local/bin/kbdlight")
+        pass
+
+    import importlib.machinery
+    import importlib.util
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(here, "Yilong15pro-kbdlight.py"),        # 源码目录
+        "/usr/lib/Yilong15pro-kbdlight/yilong_kbdlight.py",   # Arch 包
+        "/usr/local/bin/Yilong15pro-kbdlight",                # install.sh
+        "/usr/bin/Yilong15pro-kbdlight",                      # Arch 包
+        os.path.join(here, "Yilong15pro-kbdlight"),
+    ]
+    for path in candidates:
+        if not os.path.isfile(path):
+            continue
+        loader = importlib.machinery.SourceFileLoader(
+            "yilong_kbdlight", path)
+        spec = importlib.util.spec_from_file_location(
+            "yilong_kbdlight", path, loader=loader)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["yilong_kbdlight"] = mod
+        loader.exec_module(mod)
+        return mod
+
+    raise ImportError(
+        "找不到 yilong_kbdlight 主模块。请先安装：\n"
+        "    sudo pacman -S Yilong15pro-kbdlight      # 或 makepkg -si\n"
+        "    ./install.sh                              # 或本仓库脚本")
+
+
+kbdlight = _load_kbdlight()
 
 from PySide6.QtCore import Qt, QTimer, QSize
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
@@ -78,7 +95,7 @@ from PySide6.QtWidgets import (
 
 
 # --------------------------------------------------------------------------
-# EC 访问代理（普通用户 -> sudo kbdlight 子进程）
+# EC 访问代理（普通用户 -> sudo Yilong15pro-kbdlight 子进程）
 # --------------------------------------------------------------------------
 
 class EcError(kbdlight.KbdLightError):
@@ -86,9 +103,9 @@ class EcError(kbdlight.KbdLightError):
 
 
 class Ec:
-    """通过 `sudo kbdlight` 子进程读写 EC。
+    """通过 `sudo Yilong15pro-kbdlight` 子进程读写 EC。
 
-    kbdlight 找不到时回退到 `sudo python3 /path/to/kbdlight.py`，
+    Yilong15pro-kbdlight 找不到时回退到 `sudo python3 /path/to/kbdlight.py`，
     这样源码目录直接跑也工作。
     """
 
@@ -100,17 +117,17 @@ class Ec:
 
     def _find_target(self):
         """返回 [cmd...] 前缀，或者 None 表示只能本地（需 root）。"""
-        exe = shutil.which("kbdlight")
+        exe = shutil.which("Yilong15pro-kbdlight")
         if exe:
             return [exe]
         here = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "kbdlight.py")
+                            "Yilong15pro-kbdlight.py")
         if os.path.exists(here):
             return [sys.executable, here]
         return None
 
     def _run(self, args):
-        """跑一次 kbdlight，返回 stdout。非零退出码抛 EcError。"""
+        """跑一次 Yilong15pro-kbdlight，返回 stdout。非零退出码抛 EcError。"""
         if self.force_local:
             raise EcError("只读模式：未执行任何写操作")
 
@@ -127,11 +144,11 @@ class Ec:
                 except SystemExit as e:
                     rc = e.code or 0
                 if rc:
-                    raise EcError(f"kbdlight 返回 {rc}")
+                    raise EcError(f"Yilong15pro-kbdlight 返回 {rc}")
                 return buf.getvalue()
             raise EcError(
-                "需要 root 权限，且找不到 kbdlight 命令。\n"
-                "请安装： sudo install -m 755 kbdlight.py /usr/local/bin/kbdlight")
+                "需要 root 权限，且找不到 Yilong15pro-kbdlight 命令。\n"
+                "请安装： sudo install -m 755 Yilong15pro-kbdlight.py /usr/bin/Yilong15pro-kbdlight")
 
         cmd = ["sudo", "-n"] + self.target + ["--no-sudo"] + args
         env = dict(os.environ, KBDLIGHT_NO_SUDO="1")
@@ -141,17 +158,17 @@ class Ec:
         except FileNotFoundError as e:
             raise EcError(f"找不到 sudo: {e}") from e
         except subprocess.TimeoutExpired as e:
-            raise EcError("kbdlight 超时（EC 无响应？）") from e
+            raise EcError("Yilong15pro-kbdlight 超时（EC 无响应？）") from e
 
         if p.returncode != 0:
             msg = (p.stderr or p.stdout or "").strip()
             if "password" in msg.lower() or "sudo" in msg.lower():
                 msg += ("\n\n提示: 请配置免密 sudo：\n"
-                        "  unicon ALL=(root) NOPASSWD: /usr/local/bin/kbdlight\n"
-                        "   写入 /etc/sudoers.d/kbdlight")
-            raise EcError(msg or f"sudo kbdlight 失败 (code {p.returncode})")
+                        "  unicon ALL=(root) NOPASSWD: /usr/bin/Yilong15pro-kbdlight\n"
+                        "   运行: sudo Yilong15pro-kbdlight-setup-sudo")
+            raise EcError(msg or f"sudo Yilong15pro-kbdlight 失败 (code {p.returncode})")
         return p.stdout
-    # -- 高层接口，与 kbdlight 模块同名 ---------------------------------
+    # -- 高层接口，与主模块同名 -----------------------------------------
 
     def read_state(self) -> dict:
         """读完整状态（JSON 模式），返回 dict。"""
@@ -168,11 +185,11 @@ class Ec:
 
     def set_levels(self, r, g, b) -> None:
         """写电平并点亮。用 read → 改 → 写 的原子命令：
-        kbdlight 没有「直接给电平」的 CLI，但 set_levels 等效于按电平
+        Yilong15pro-kbdlight 没有「直接给电平」的 CLI，但 set_levels 等效于按电平
         对应的 0..255 颜色写入（电平 0 走不到，因为 set_rgb 会夹成 0）。
 
         更简单可靠：写一个专用的一次性脚本。这里用 `brightness` 不行，
-        所以直接调用内部接口 —— kbdlight 提供一个 `--levels` 隐藏命令。
+        所以直接调用内部接口 —— Yilong15pro-kbdlight 提供 `levels` 子命令。
         """
         self._run(["levels", str(int(r)), str(int(g)), str(int(b))])
 
@@ -227,7 +244,7 @@ class KbdLightWindow(QMainWindow):
         super().__init__()
         self.read_only = read_only
 
-        # ★ EC 访问代理：普通用户进程 -> sudo kbdlight 子进程。
+        # ★ EC 访问代理：普通用户进程 -> sudo Yilong15pro-kbdlight 子进程。
         #   read_only 时连读也不走（实际上读也可以，但避免任何 sudo 调用）。
         self.ec = Ec(force_local=read_only)
 
@@ -533,7 +550,7 @@ class KbdLightWindow(QMainWindow):
         """点亮：恢复关灯前的颜色与亮度档。
 
         ★ 不再写死最高亮度 —— 用 _last_level 记住关灯前的滑条档位。
-        ★ 不用 kbdlight.load_state()：那个文件（/run/kbdlight.last）由 root
+        ★ 不用 kbdlight.load_state()：那个文件（/run/Yilong15pro-kbdlight.last）由 root
           写，普通用户读不到。颜色改从 EC 回读（或者用意图色）。
         """
         if self.read_only:
@@ -590,17 +607,17 @@ def _app_icon() -> QIcon:
     """取应用图标。
 
     优先级：
-      1) 主题图标（kbdlight）—— 安装后会命中 /usr/share/icons/hicolor/...
+      1) 主题图标（Yilong15pro-kbdlight）—— 安装后会命中 /usr/share/icons/hicolor/...
       2) 脚本同目录的 kbdlight.svg
       3) 现场用 QPainter 画一个（保底）
     """
-    ic = QIcon.fromTheme("kbdlight")
+    ic = QIcon.fromTheme("Yilong15pro-kbdlight")
     if not ic.isNull() and ic.availableSizes():
         return ic
 
     here = os.path.dirname(os.path.abspath(__file__))
-    for cand in (os.path.join(here, "kbdlight.svg"),
-                 "/usr/share/icons/hicolor/scalable/apps/kbdlight.svg"):
+    for cand in (os.path.join(here, "Yilong15pro-kbdlight.svg"),
+                 "/usr/share/icons/hicolor/scalable/apps/Yilong15pro-kbdlight.svg"):
         if os.path.isfile(cand):
             ic = QIcon(cand)
             if not ic.isNull():
@@ -627,16 +644,17 @@ def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
     if any(a in ("-V", "--version") for a in argv):
-        print(f"kbdlight-gui {__version__}  (kbdlight {kbdlight.__version__})")
+        print(f"Yilong15pro-kbdlight-gui {__version__}"
+              f"  (Yilong15pro-kbdlight {kbdlight.__version__})")
         return 0
 
     read_only_flag = ("--read-only" in argv) or ("--no-elevate" in argv)
 
     app = QApplication(sys.argv)
-    app.setApplicationName("kbdlight-gui")
+    app.setApplicationName("Yilong15pro-kbdlight-gui")
     app.setApplicationDisplayName("键盘背光")
     # ★ 让 Wayland/KDE 能把窗口关联到 kbdlight.desktop，从而显示正确图标
-    app.setDesktopFileName("kbdlight")
+    app.setDesktopFileName("Yilong15pro-kbdlight")
     app.setWindowIcon(_app_icon())
 
     # 报告实际使用的 Qt 平台后端（便于排查 Wayland/xcb 问题）
@@ -663,7 +681,7 @@ def main(argv=None) -> int:
             read_only = True
             QMessageBox.warning(
                 None, "无写权限，已进入只读模式",
-                f"无法通过 sudo 调用 kbdlight：\n\n{e}\n\n"
+                f"无法通过 sudo 调用 Yilong15pro-kbdlight：\n\n{e}\n\n"
                 "界面仍可查看状态，但不能修改。")
 
     win = KbdLightWindow(read_only=read_only)
