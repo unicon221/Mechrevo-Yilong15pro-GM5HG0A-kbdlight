@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=Yilong15pro-kbdlight
-Name[zh_CN]=键盘背光
-Name[zh_TW]=鍵盤背光
+Name=Keyboard Backlight (Yilong 15 Pro)
+Name[zh_CN]=键盘背光（翼龙15Pro）
+Name[zh_TW]=鍵盤背光（翼龍15Pro）
 Comment=Keyboard RGB backlight control for Mechrevo Yilong 15 Pro
 Comment[zh_CN]=机械革命翼龙15Pro 键盘 RGB 背光控制
 Comment[zh_TW]=機械革命翼龍15Pro 鍵盤 RGB 背光控制
@@ -11,8 +11,8 @@ Exec=Yilong15pro-kbdlight-gui
 Icon=Yilong15pro-kbdlight
 Terminal=false
 Categories=Settings;HardwareSettings;
-Keywords=keyboard;backlight;rgb;led;light;mechrevo;键盤;背光;灯光;
-Keywords[zh_CN]=键盘;背光;灯效;灯光;RGB;机械革命;
-Keywords[zh_TW]=鍵盤;背光;燈效;燈光;RGB;機械革命;
+Keywords=keyboard;backlight;rgb;led;light;mechrevo;
+Keywords[zh_CN]=键盘;背光;灯效;灯光;RGB;机械革命;翼龙;
+Keywords[zh_TW]=鍵盤;背光;燈效;燈光;RGB;機械革命;翼龍;
 StartupNotify=true
 StartupWMClass=Yilong15pro-kbdlight-gui

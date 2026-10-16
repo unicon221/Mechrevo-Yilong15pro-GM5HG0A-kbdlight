@@ -259,7 +259,7 @@ class KbdLightWindow(QMainWindow):
         # ★ 关灯前的亮度档（0..50）—— 供「开灯」恢复，避免回弹到最亮
         self._last_level = kbdlight.LEVEL_SCALES
 
-        self.setWindowTitle("键盘背光 — 机械革命翼龙15Pro")
+        self.setWindowTitle(f"机械革命翼龙15Pro-键盘背光 ({__version__})")
         self.setMinimumWidth(460)
 
         root = QWidget()
