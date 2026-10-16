@@ -3,7 +3,7 @@
 在 Arch Linux 上原生控制 MECHREVO 翼龙15Pro（Uniwill GM5HG0A）键盘 RGB 背光。
 无需 Windows、无需厂商驱动。
 
-> **v0.2** — 新增真正的「全灭」（电平 0 + 默认电平同步）、PySide6 图形界面。
+> **v0.3** — 桌面集成：`.desktop` 入口 + hicolor 图标，装完即出现在应用菜单。
 > 见 [更新记录](#更新记录)。
 
 包含两部分：
@@ -259,6 +259,17 @@ GUI 以**普通用户**运行，通过 `sudo kbdlight` 子进程读写 EC（靠�
 
 ## 更新记录
 
+### v0.3
+
+- **桌面集成**：`kbdlight.desktop` + hicolor 图标（SVG 源 + 8 种 PNG 尺寸）。
+  装完即出现在应用菜单与任务栏，图标正确显示。
+  中/英/繁三语名称与关键字；`desktop-file-validate` 零警告。
+- GUI 调用 `setDesktopFileName("kbdlight")` —— Wayland/KDE 才能把窗口
+  关联到桌面入口（否则任务栏显示默认图标）。
+  `_app_icon()` 三级回退：主题图标 → 同目录 SVG → 现场绘制。
+- `install.sh` 同步安装 desktop/图标并刷新桌面与图标缓存；卸载一并清理。
+- PKGBUILD 安装 desktop 与全部图标尺寸。
+
 ### v0.2
 
 - **真正的「全灭」**。`off` 现在是电平 `0/0/0`，肉眼完全无光。
@@ -275,6 +286,7 @@ GUI 以**普通用户**运行，通过 `sudo kbdlight` 子进程读写 EC（靠�
   `FanBoost_Trigger`（解释了早前「写 0x04 风扇满速」的谜团）。
 - 全 EC 差分（608 个寄存器）证明**不存在效果号寄存器**：
   「静态色」与「轮转动画」的唯一差异是 `0x0767` 的 `0x80` 位。
+- Arch Linux 包（PKGBUILD）+ `install.sh`。
 
 ### v0.1
 

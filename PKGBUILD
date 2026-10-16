@@ -15,7 +15,7 @@
 #     这样避免包管理器写用户相关的 /etc/sudoers.d 规则。
 
 pkgname=kbdlight
-pkgver=0.2
+pkgver=0.3
 pkgrel=1
 pkgdesc="Keyboard RGB backlight control for Mechrevo Yilong 15 Pro (GM5HG0A / Uniwill EC) on Linux"
 arch=('any')
@@ -37,7 +37,7 @@ sha256sums=('SKIP')
 
 package() {
     # GitHub 的 tarball 顶层目录名是 <repo>-<tag>，
-    # 即 Mechrevo-Yilong15pro-GM5HG0A-kbdlight-0.2
+    # 即 Mechrevo-Yilong15pro-GM5HG0A-kbdlight-0.3
     # （源代码已在前面声明为 _repo）
     cd "$srcdir/$_repo-$pkgver"
 

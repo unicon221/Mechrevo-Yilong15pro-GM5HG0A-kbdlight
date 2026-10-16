@@ -63,7 +63,7 @@ kbdlight — 机械革命翼龙15Pro (Uniwill GM5HG0A) 键盘 RGB 背光控制
 
 from __future__ import annotations
 
-__version__ = "0.2"
+__version__ = "0.3"
 
 import json
 import os
