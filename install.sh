@@ -14,6 +14,13 @@ BIN_DIR="/usr/local/bin"
 SUDOERS="/etc/sudoers.d/kbdlight"
 TARGET_USER="${SUDO_USER:-${USER:-$(id -un)}}"
 
+# 若已用 pacman 安装（/usr/bin/kbdlight），则不重复装到 /usr/local/bin ——
+# 这会遮蔽包版本，导致升级时行为不一致。
+PKG_INSTALLED=0
+if pacman -Q kbdlight >/dev/null 2>&1; then
+  PKG_INSTALLED=1
+fi
+
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
@@ -39,6 +46,17 @@ if (( UNINSTALL )); then
   sudo rm -f "$BIN_DIR/kbdlight" "$BIN_DIR/kbdlight-gui"
   sudo rm -f "$SUDOERS"
   say "完成。（未改动 /etc/modules-load.d/acpi_call.conf，如需移除请手动处理）"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# 如果已用 pacman 装过，直接退出并提示
+# ---------------------------------------------------------------------------
+if (( PKG_INSTALLED )); then
+  warn "已检测到 pacman 包 kbdlight（/usr/bin/kbdlight）"
+  warn "无需再跑 install.sh。如需配置免密 sudo："
+  warn "    sudo kbdlight-setup-sudo"
+  warn "卸载： sudo pacman -R kbdlight"
   exit 0
 fi
 

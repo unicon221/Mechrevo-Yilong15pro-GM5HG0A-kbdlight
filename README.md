@@ -145,18 +145,48 @@ bit 常量：`SUPPORT_BIT=0x04`、`TRIGGER_BIT=0x20`、`WELCOME_BIT=0x80`。
 
 ### 安装
 
+#### 方式一：Arch Linux 包（推荐）
+
+仓库内附 `PKGBUILD`，构建安装：
+
 ```bash
 git clone https://github.com/unicon221/Mechrevo-Yilong15pro-GM5HG0A-kbdlight
 cd Mechrevo-Yilong15pro-GM5HG0A-kbdlight
-./install.sh                 # 装 CLI + GUI + 免密规则（需 acpi_call）
+makepkg -si                 # 构建并安装
+sudo kbdlight-setup-sudo    # 一次性写入免密 sudo 规则
 ```
 
-依赖：
+包会装到 `/usr/bin/{kbdlight,kbdlight-gui,kbdlight-setup-sudo}`，
+文档在 `/usr/share/doc/kbdlight/`。卸载：`sudo pacman -R kbdlight`。
 
-- `acpi_call` 内核模块 — `sudo pacman -S acpi_call`（Debian/Ubuntu: `acpi-call-dkms`）
-- Python 3（GUI 另需 `pyside6`）
+#### 方式二：install.sh（任意发行版）
 
-手动安装也可以：
+```bash
+./install.sh                 # 装 CLI + GUI + 免密规则到 /usr/local/bin
+./install.sh --cli-only      # 只装 CLI
+./install.sh --uninstall     # 卸载
+```
+
+已用 pacman 装过的话，`install.sh` 会提示并退出（避免 `/usr/local/bin`
+遮蔽包版本）。
+
+#### 依赖
+
+| 依赖 | 必需？ | 说明 |
+|------|--------|------|
+| `acpi_call` | **必需** | 提供 `/proc/acpi/call`，实际读写 EC 的通道 |
+| `python` | **必需** | 3.8+（CLI 只用标准库）|
+| `pyside6` | 可选 | 图形界面 |
+
+```bash
+# Arch
+sudo pacman -S acpi_call python pyside6
+
+# Debian / Ubuntu
+sudo apt install acpi-call-dkms python3 python3-pyside6.qtwidgets
+```
+
+#### 手动安装
 
 ```bash
 sudo install -m 755 kbdlight.py     /usr/local/bin/kbdlight
@@ -199,9 +229,10 @@ GUI 以**普通用户**运行，通过 `sudo kbdlight` 子进程读写 EC（靠�
 
 ## 文件
 
-- `kbdlight.py` — 命令行工具 / 模块（纯 Python 标准库）→ `/usr/local/bin/kbdlight`
-- `kbdlight-gui.py` — 图形界面（PySide6）→ `/usr/local/bin/kbdlight-gui`
-- `install.sh` — 安装/卸载脚本
+- `kbdlight.py` — 命令行工具 / 模块（纯 Python 标准库）
+- `kbdlight-gui.py` — 图形界面（PySide6）
+- `PKGBUILD` — Arch Linux 包描述
+- `install.sh` — 安装/卸载脚本（任意发行版）
 - `PROTOCOL.md` — 完整逆向笔记（寄存器全表、PE 抓取、IL 反编译结论）
 
 > WinPE 抓包流程笔记（`PE-CAPTURE.md`）与构建目录（`pe-build/`，含厂商
