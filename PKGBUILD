@@ -28,21 +28,32 @@ conflicts=('kbdlight-git')
 backup=()
 options=('!strip')
 
+# 仓库名（GitHub tarball 的顶层目录是 <repo>-<tag>）
+_repo=Mechrevo-Yilong15pro-GM5HG0A-kbdlight
+
 # 从 GitHub 的 v$pkgver 标签取源码
-source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+source=("$_repo-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
 package() {
     # GitHub 的 tarball 顶层目录名是 <repo>-<tag>，
     # 即 Mechrevo-Yilong15pro-GM5HG0A-kbdlight-0.2
-    cd "$srcdir"
-    local src
-    src="$(find . -maxdepth 1 -type d -name "*-$pkgver" | head -n1)"
-    [ -n "$src" ] || { echo "找不到解包目录" >&2; exit 1; }
-    cd "$src"
+    # （源代码已在前面声明为 _repo）
+    cd "$srcdir/$_repo-$pkgver"
 
     install -Dm755 kbdlight.py     "$pkgdir/usr/bin/kbdlight"
     install -Dm755 kbdlight-gui.py "$pkgdir/usr/bin/kbdlight-gui"
+
+    # 桌面入口 + 图标
+    install -Dm644 kbdlight.desktop \
+        "$pkgdir/usr/share/applications/kbdlight.desktop"
+
+    install -Dm644 kbdlight.svg \
+        "$pkgdir/usr/share/icons/hicolor/scalable/apps/kbdlight.svg"
+    for s in 16 24 32 48 64 128 256 512; do
+        install -Dm644 "icons/hicolor/${s}x${s}/apps/kbdlight.png" \
+            "$pkgdir/usr/share/icons/hicolor/${s}x${s}/apps/kbdlight.png"
+    done
 
     install -Dm644 README.md   "$pkgdir/usr/share/doc/$pkgname/README.md"
     install -Dm644 PROTOCOL.md "$pkgdir/usr/share/doc/$pkgname/PROTOCOL.md"

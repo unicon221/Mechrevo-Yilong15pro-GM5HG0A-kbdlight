@@ -157,12 +157,13 @@ sudo kbdlight-setup-sudo    # 一次性写入免密 sudo 规则
 ```
 
 包会装到 `/usr/bin/{kbdlight,kbdlight-gui,kbdlight-setup-sudo}`，
+同时安装**桌面入口与图标**（应用菜单里搜「键盘背光」），
 文档在 `/usr/share/doc/kbdlight/`。卸载：`sudo pacman -R kbdlight`。
 
 #### 方式二：install.sh（任意发行版）
 
 ```bash
-./install.sh                 # 装 CLI + GUI + 免密规则到 /usr/local/bin
+./install.sh                 # 装 CLI + GUI + 桌面入口/图标 + 免密规则
 ./install.sh --cli-only      # 只装 CLI
 ./install.sh --uninstall     # 卸载
 ```
@@ -231,6 +232,8 @@ GUI 以**普通用户**运行，通过 `sudo kbdlight` 子进程读写 EC（靠�
 
 - `kbdlight.py` — 命令行工具 / 模块（纯 Python 标准库）
 - `kbdlight-gui.py` — 图形界面（PySide6）
+- `kbdlight.desktop` — 桌面入口（应用菜单）
+- `kbdlight.svg` / `icons/` — 图标（SVG 源 + 8 种 PNG 尺寸）
 - `PKGBUILD` — Arch Linux 包描述
 - `install.sh` — 安装/卸载脚本（任意发行版）
 - `PROTOCOL.md` — 完整逆向笔记（寄存器全表、PE 抓取、IL 反编译结论）

@@ -586,6 +586,43 @@ class KbdLightWindow(QMainWindow):
 # 入口
 # --------------------------------------------------------------------------
 
+def _app_icon() -> QIcon:
+    """取应用图标。
+
+    优先级：
+      1) 主题图标（kbdlight）—— 安装后会命中 /usr/share/icons/hicolor/...
+      2) 脚本同目录的 kbdlight.svg
+      3) 现场用 QPainter 画一个（保底）
+    """
+    ic = QIcon.fromTheme("kbdlight")
+    if not ic.isNull() and ic.availableSizes():
+        return ic
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    for cand in (os.path.join(here, "kbdlight.svg"),
+                 "/usr/share/icons/hicolor/scalable/apps/kbdlight.svg"):
+        if os.path.isfile(cand):
+            ic = QIcon(cand)
+            if not ic.isNull():
+                return ic
+
+    # 保底：画一枚小键盘
+    pm = QPixmap(64, 64)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setBrush(QColor(43, 43, 49))
+    p.setPen(QColor(74, 74, 82))
+    p.drawRoundedRect(3, 12, 58, 40, 7, 7)
+    for i, c in enumerate((QColor(255, 59, 48), QColor(52, 199, 89),
+                           QColor(10, 132, 255))):
+        p.setBrush(c)
+        p.setPen(Qt.NoPen)
+        p.drawRoundedRect(10 + i * 16, 20, 12, 10, 2, 2)
+    p.end()
+    return QIcon(pm)
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
@@ -598,6 +635,9 @@ def main(argv=None) -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("kbdlight-gui")
     app.setApplicationDisplayName("键盘背光")
+    # ★ 让 Wayland/KDE 能把窗口关联到 kbdlight.desktop，从而显示正确图标
+    app.setDesktopFileName("kbdlight")
+    app.setWindowIcon(_app_icon())
 
     # 报告实际使用的 Qt 平台后端（便于排查 Wayland/xcb 问题）
     print(f"Qt platform: {app.platformName()}   "

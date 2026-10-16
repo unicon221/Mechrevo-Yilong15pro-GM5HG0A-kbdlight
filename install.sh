@@ -45,6 +45,15 @@ if (( UNINSTALL )); then
   say "卸载 kbdlight"
   sudo rm -f "$BIN_DIR/kbdlight" "$BIN_DIR/kbdlight-gui"
   sudo rm -f "$SUDOERS"
+  sudo rm -f /usr/share/applications/kbdlight.desktop
+  sudo rm -f /usr/share/icons/hicolor/scalable/apps/kbdlight.svg
+  for s in 16 24 32 48 64 128 256 512; do
+    sudo rm -f "/usr/share/icons/hicolor/${s}x${s}/apps/kbdlight.png"
+  done
+  command -v update-desktop-database >/dev/null && \
+    sudo update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+  command -v gtk-update-icon-cache >/dev/null && \
+    sudo gtk-update-icon-cache -qtf /usr/share/icons/hicolor >/dev/null 2>&1 || true
   say "完成。（未改动 /etc/modules-load.d/acpi_call.conf，如需移除请手动处理）"
   exit 0
 fi
@@ -104,6 +113,35 @@ if (( ! CLI_ONLY )); then
     if python3 -c 'import PySide6' 2>/dev/null; then
       say "安装 GUI  ->  $BIN_DIR/kbdlight-gui"
       sudo install -m 755 "$HERE/kbdlight-gui.py" "$BIN_DIR/kbdlight-gui"
+
+      # 桌面入口 + 图标（让 GUI 出现在应用菜单里）
+      if [ -f "$HERE/kbdlight.desktop" ]; then
+        say "安装桌面入口  ->  /usr/share/applications/kbdlight.desktop"
+        sudo install -Dm644 "$HERE/kbdlight.desktop" \
+             /usr/share/applications/kbdlight.desktop
+      fi
+
+      if [ -f "$HERE/kbdlight.svg" ]; then
+        say "安装图标（hicolor 主题）"
+        sudo install -Dm644 "$HERE/kbdlight.svg" \
+             /usr/share/icons/hicolor/scalable/apps/kbdlight.svg
+        if [ -d "$HERE/icons/hicolor" ]; then
+          for s in 16 24 32 48 64 128 256 512; do
+            src_png="$HERE/icons/hicolor/${s}x${s}/apps/kbdlight.png"
+            [ -f "$src_png" ] || continue
+            sudo install -Dm644 "$src_png" \
+                 "/usr/share/icons/hicolor/${s}x${s}/apps/kbdlight.png"
+          done
+        fi
+      fi
+
+      # 刷新桌面/图标缓存
+      if command -v update-desktop-database >/dev/null; then
+        sudo update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+      fi
+      if command -v gtk-update-icon-cache >/dev/null; then
+        sudo gtk-update-icon-cache -qtf /usr/share/icons/hicolor >/dev/null 2>&1 || true
+      fi
     else
       warn "未检测到 PySide6，跳过 GUI。安装后可重跑本脚本："
       warn "  Arch:  sudo pacman -S pyside6"
