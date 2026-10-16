@@ -54,17 +54,21 @@ kbdlight — 机械革命翼龙15Pro (Uniwill GM5HG0A) 键盘 RGB 背光控制
 ----
     sudo kbdlight RRGGBB            # 设置颜色并点亮
     sudo kbdlight on                # 点亮（恢复上次颜色或默认色）
-    sudo kbdlight off               # 关闭
+    sudo kbdlight off               # 关闭（电平全 0，完全熄灭）
     sudo kbdlight brightness 0-255  # 亮度（按比例缩放，保持色相）
+    sudo kbdlight levels R G B      # 直接写 0..50 电平（高级用法）
     sudo kbdlight read              # 读当前状态（支持 --json）
     sudo kbdlight demo              # 循环演示颜色
 """
 
 from __future__ import annotations
 
+__version__ = "0.2"
+
 import json
 import os
 import re
+import shutil
 import sys
 import time
 
@@ -524,9 +528,9 @@ def rgb_to_hex(rgb) -> str:
 # CLI
 # --------------------------------------------------------------------------
 
-def _usage() -> None:
+def _usage(code: int = 1) -> None:
     print(__doc__)
-    sys.exit(1)
+    sys.exit(code)
 
 
 def _print_read(state: dict, as_json: bool = False) -> None:
@@ -558,6 +562,35 @@ def _print_read(state: dict, as_json: bool = False) -> None:
         print("  (电平全 0 —— 键盘背光完全熄灭)")
 
 
+def _maybe_reexec_with_sudo(argv) -> None:
+    """非 root 且需要写 EC 时，用 sudo 重新执行自己。
+
+    - 只读命令（read）不提权：EC 读虽然也要 root，但 read 可以用
+      ACPI 得到的普通错误提示，不必打断用户。
+    - 通过 PKEXEC/sudo 重新 exec 时，用绝对路径，防止 PATH 劫持。
+    - 已设 KBDLIGHT_NO_SUDO=1 时跳过（供 GUI 子进程调用，避免递归）。
+    """
+    if os.geteuid() == 0:
+        return
+    if os.environ.get("KBDLIGHT_NO_SUDO"):
+        return
+
+    # 找到本脚本的绝对路径
+    self_path = os.path.abspath(__file__)
+    if not os.path.exists(self_path):
+        self_path = shutil.which("kbdlight") or self_path
+
+    sudo = shutil.which("sudo")
+    if sudo:
+        env = dict(os.environ, KBDLIGHT_NO_SUDO="1")
+        os.execve(sudo, [sudo, sys.executable, self_path] + list(argv), env)
+    pkexec = shutil.which("pkexec")
+    if pkexec:
+        env = dict(os.environ, KBDLIGHT_NO_SUDO="1")
+        os.execve(pkexec, [pkexec, sys.executable, self_path] + list(argv), env)
+    # 都没找到：让后续的 ec_write 报错（会提示用 sudo）
+
+
 def main(argv=None) -> int:
     """命令行入口。返回退出码。"""
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -568,9 +601,28 @@ def main(argv=None) -> int:
         argv.remove("--json")
         as_json = True
 
+    # --no-sudo：禁止自动提权（供脚本/GUI 使用）
+    no_sudo = False
+    if "--no-sudo" in argv:
+        argv.remove("--no-sudo")
+        no_sudo = True
+
     if not argv:
         _usage()
-    cmd = argv[0].lower()
+    raw_cmd = argv[0]
+    cmd = raw_cmd.lower()
+
+    if raw_cmd in ("-V", "--version") or cmd == "version":
+        print(f"kbdlight {__version__}")
+        return 0
+
+    if raw_cmd in ("-h", "--help") or cmd == "help":
+        _usage(0)
+
+    # ★ 非 root 且需要读/写 EC：自动提权重跑。
+    #   help/version 已在上面返回。read 也要 root（/proc/acpi/call 是 root）。
+    if not no_sudo:
+        _maybe_reexec_with_sudo(argv)
 
     try:
         check_available()
@@ -615,6 +667,31 @@ def main(argv=None) -> int:
             pct = float(argv[1])
             rgb = set_percent(pct)
             print(f"亮度 -> {pct:g}%  ({rgb_to_hex(rgb)})")
+
+        elif cmd in ("levels", "lv"):
+            if len(argv) < 4:
+                print("用法: kbdlight levels R G B   (每个 0-50)", file=sys.stderr)
+                return 1
+            try:
+                lr, lg, lb = (int(argv[1], 0), int(argv[2], 0),
+                              int(argv[3], 0))
+            except ValueError:
+                print("三个参数必须是 0-50 的整数", file=sys.stderr)
+                return 1
+            for v in (lr, lg, lb):
+                if not LEVEL_OFF <= v <= LEVEL_MAX:
+                    print(f"电平范围 {LEVEL_OFF}-{LEVEL_MAX}（得到 {v}）",
+                          file=sys.stderr)
+                    return 1
+            # 电平 0 需要走 off() 的「同时写默认电平」路径，否则会被 EC 回跳。
+            if max(lr, lg, lb) == LEVEL_OFF:
+                off()
+                print("键盘背光已完全关闭（电平 0，无微光）。")
+            else:
+                set_levels(lr, lg, lb)
+                save_state(from_levels((lr, lg, lb)))
+                print(f"键盘背光电平 -> {lr} {lg} {lb}"
+                      f"  ({rgb_to_hex(from_levels((lr, lg, lb))) })")
 
         elif cmd == "demo":
             for name, c in PALETTE[:7]:

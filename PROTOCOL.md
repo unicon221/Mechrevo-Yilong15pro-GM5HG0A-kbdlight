@@ -971,12 +971,12 @@ registers the write touched.
 
 ---
 
-# ★★★ BREAKTHROUGH — RGBKB_LEVEL registers are LEVELS (1..50), not 0..255 ★★★
+# ★★★ BREAKTHROUGH — RGBKB_LEVEL registers are LEVELS (0..50), not 0..255 ★★★
 
 ## The bug that cost us everything
 
 `0x0769` / `0x076A` / `0x076B` (`RGBKB_LEVEL_R/G/B`) are **not** 0..255 colour
-channels.  They are **brightness levels in the range 1..50**.
+channels.  They are **brightness levels in the range 0..50 (0 = fully off)**.
 
 Evidence, straight out of the unobfuscated constant table of
 `MyControlCenter.MyRgbKeyboard.SingleZone` (runtime reflection on
@@ -1030,9 +1030,9 @@ $ sudo kbdlight brightness 128 -> 50->25       = dimmed red      ✓ visible
 So the correct static-colour sequence is simply:
 
 ```
-write 0x0769 = level_r        (1..50)
-write 0x076A = level_g        (1..50)
-write 0x076B = level_b        (1..50)
+write 0x0769 = level_r        (0..50)
+write 0x076A = level_g        (0..50)
+write 0x076B = level_b        (0..50)
 write 0x0767 = 0x00           (make sure the welcome bit is clear!)
 write 0x0767 = 0x20           (trigger apply; self-clearing)
 ```
@@ -1063,8 +1063,8 @@ Full keyboard-relevant map (from the `ADDR_*` literal table):
 ADDR_TRIGGER_BYTE            = 0x0767
 ADDR_TRIGGER_BYTE2           = 0x075D
 ADDR_STAUTS_BYTE             = 0x0768
-ADDR_RGBKB_LEVEL_R/G/B       = 0x0769 / 0x076A / 0x076B   (1..50)
-ADDR_RGBKB_LEVEL_DEFAULT_R/G/B = 0x076C / 0x076D / 0x076E (1..50)
+ADDR_RGBKB_LEVEL_R/G/B       = 0x0769 / 0x076A / 0x076B   (0..50)
+ADDR_RGBKB_LEVEL_DEFAULT_R/G/B = 0x076C / 0x076D / 0x076E (0..50)
 ADDR_RGBKB_MUSIC_NO          = 0x076F
 ADDR_AP_EC_LOGO_R/G/B        = 0x0769 / 0x076A / 0x076B   (same regs, logo role)
 ADDR_SINGLEKBL_ENABLE        = 0x078C   (a.k.a. AP_OEM_BYTE2 / AP_EC_LOGO_CONFIRM)
@@ -1155,9 +1155,9 @@ So the complete static-colour sequence is **four** steps, not three:
 
 ```
 0x078C <- 0x01        # SINGLEKBL_ENABLE = enable  (STICKY - must be set!)
-0x0769 <- level_r     # 1..50
-0x076A <- level_g     # 1..50
-0x076B <- level_b     # 1..50
+0x0769 <- level_r     # 0..50
+0x076A <- level_g     # 0..50
+0x076B <- level_b     # 0..50
 0x0767 <- 0x20        # trigger apply (self-clearing)
 ```
 

@@ -1,39 +1,194 @@
 #!/usr/bin/env python3
 """kbdlight-gui — 机械革命翼龙15Pro 键盘背光图形界面（PySide6 / Qt6）
 
-架构：
-    本进程以 root 运行（通过 pkexec/sudo 启动），直接 import kbdlight 模块
-    读写 EC —— 没有 subprocess、没有 socket、没有轮询开销。
+架构（2026-10-16 改版）：
+    ★ 本进程以【普通用户】运行，完全融入桌面会话（KDE/Wayland）。
+      所有 EC 读写通过 `sudo kbdlight` 子进程转发（/etc/sudoers.d/kbdlight
+      已配 NOPASSWD 免密）。
 
-    /proc/acpi/call 是 root 私有（rw-rw---- root），所以读写都需要 root。
-    因此 GUI 整体以 root 启动，而不是「读免 sudo，写走 subprocess」。
+    为什么不用 root 跑整个 GUI：
+      · root 读不到用户的 ~/.config/kdeglobals → 主题/字体/图标不跟随
+      · 输入法、剪贴板、Wayland 缩放等都会出问题
+      · 提权还会清掉 WAYLAND_DISPLAY/XDG_RUNTIME_DIR，容易回退到 XWayland
+
+    代价：每次读写多一次进程启动（约 20 ms），对 2 秒轮询完全无感。
+
+    kbdlight.py 的纯计算函数（to_level / from_levels / rgb_to_hex /
+    PALETTE / 常量）直接 import，不需要 root，零开销。
+
+前提：
+    /etc/sudoers.d/kbdlight 里给当前用户 NOPASSWD 运行 kbdlight
+    （否则每一步都会弹密码框）。
 
 用法：
-    kbdlight-gui                    # 若已配置 pkexec/sudo 则自动提权
-    sudo kbdlight-gui               # 直接以 root 运行
-    kbdlight-gui --no-elevate       # 不自动提权（调试用，只能看不能改）
+    kbdlight-gui                 # 普通用户直接运行
+    kbdlight-gui --read-only     # 只读（不执行任何 sudo 写操作）
 """
 
 from __future__ import annotations
 
+__version__ = "0.2"
+
+import json
 import os
+import shutil
+import subprocess
 import sys
 
-# 让 GUI 能在源码目录直接运行
+# 让 GUI 能在源码目录直接运行；安装到 /usr/local/bin 后也能找到模块。
 try:
     import kbdlight
 except ImportError:
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import kbdlight
+    # 1) 同目录（源码目录 或 /usr/local/bin）
+    _here = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, _here)
+    try:
+        import kbdlight
+    except ImportError:
+        # 2) /usr/local/bin/kbdlight 是个无 .py 后缀的文件，python 找不到，
+        #    用 importlib 按路径加载。
+        import importlib.machinery
+        import importlib.util
+        _cands = [os.path.join(_here, "kbdlight"),
+                  "/usr/local/bin/kbdlight",
+                  os.path.join(_here, "kbdlight.py")]
+        for _c in _cands:
+            if os.path.isfile(_c):
+                _spec = importlib.util.spec_from_file_location(
+                    "kbdlight", _c,
+                    loader=importlib.machinery.SourceFileLoader(
+                        "kbdlight", _c))
+                kbdlight = importlib.util.module_from_spec(_spec)
+                sys.modules["kbdlight"] = kbdlight
+                _spec.loader.exec_module(kbdlight)
+                break
+        else:
+            raise ImportError(
+                "找不到 kbdlight 模块。请先安装：\n"
+                "    sudo install -m 755 kbdlight.py /usr/local/bin/kbdlight")
 
 from PySide6.QtCore import Qt, QTimer, QSize
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QAction
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QLabel, QPushButton, QSlider, QFrame, QGroupBox,
     QColorDialog, QMessageBox, QStatusBar, QToolButton, QSizePolicy,
-    QScrollArea, QSpacerItem,
+    QSpacerItem,
 )
+
+
+# --------------------------------------------------------------------------
+# EC 访问代理（普通用户 -> sudo kbdlight 子进程）
+# --------------------------------------------------------------------------
+
+class EcError(kbdlight.KbdLightError):
+    """代理层自身的错误（找不到可执行文件、sudo 失败等）。"""
+
+
+class Ec:
+    """通过 `sudo kbdlight` 子进程读写 EC。
+
+    kbdlight 找不到时回退到 `sudo python3 /path/to/kbdlight.py`，
+    这样源码目录直接跑也工作。
+    """
+
+    def __init__(self, force_local: bool = False):
+        self.force_local = force_local
+        self.target = self._find_target()
+        self._local = (force_local or self.target is None)
+        self.last_error = None
+
+    def _find_target(self):
+        """返回 [cmd...] 前缀，或者 None 表示只能本地（需 root）。"""
+        exe = shutil.which("kbdlight")
+        if exe:
+            return [exe]
+        here = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "kbdlight.py")
+        if os.path.exists(here):
+            return [sys.executable, here]
+        return None
+
+    def _run(self, args):
+        """跑一次 kbdlight，返回 stdout。非零退出码抛 EcError。"""
+        if self.force_local:
+            raise EcError("只读模式：未执行任何写操作")
+
+        if self._local:
+            # 已是 root（或开发模式）：直接调模块，零开销
+            if os.geteuid() == 0:
+                from io import StringIO
+                import contextlib
+                buf = StringIO()
+                rc = 0
+                try:
+                    with contextlib.redirect_stdout(buf):
+                        rc = kbdlight.main(args)
+                except SystemExit as e:
+                    rc = e.code or 0
+                if rc:
+                    raise EcError(f"kbdlight 返回 {rc}")
+                return buf.getvalue()
+            raise EcError(
+                "需要 root 权限，且找不到 kbdlight 命令。\n"
+                "请安装： sudo install -m 755 kbdlight.py /usr/local/bin/kbdlight")
+
+        cmd = ["sudo", "-n"] + self.target + ["--no-sudo"] + args
+        env = dict(os.environ, KBDLIGHT_NO_SUDO="1")
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True,
+                               timeout=10, env=env)
+        except FileNotFoundError as e:
+            raise EcError(f"找不到 sudo: {e}") from e
+        except subprocess.TimeoutExpired as e:
+            raise EcError("kbdlight 超时（EC 无响应？）") from e
+
+        if p.returncode != 0:
+            msg = (p.stderr or p.stdout or "").strip()
+            if "password" in msg.lower() or "sudo" in msg.lower():
+                msg += ("\n\n提示: 请配置免密 sudo：\n"
+                        "  unicon ALL=(root) NOPASSWD: /usr/local/bin/kbdlight\n"
+                        "   写入 /etc/sudoers.d/kbdlight")
+            raise EcError(msg or f"sudo kbdlight 失败 (code {p.returncode})")
+        return p.stdout
+    # -- 高层接口，与 kbdlight 模块同名 ---------------------------------
+
+    def read_state(self) -> dict:
+        """读完整状态（JSON 模式），返回 dict。"""
+        try:
+            out = self._run(["state"])   # state = read_state JSON
+            return json.loads(out)
+        except (json.JSONDecodeError, EcError) as e:
+            self.last_error = str(e)
+            return {"available": False, "error": str(e), "levels": None,
+                    "rgb": None, "hex": None, "lit": None, "percent": None,
+                    "support": None, "rgb_supported": None, "trigger": None,
+                    "welcome": None, "singlekbl": None, "singlekbl_ok": None,
+                    "defaults": None}
+
+    def set_levels(self, r, g, b) -> None:
+        """写电平并点亮。用 read → 改 → 写 的原子命令：
+        kbdlight 没有「直接给电平」的 CLI，但 set_levels 等效于按电平
+        对应的 0..255 颜色写入（电平 0 走不到，因为 set_rgb 会夹成 0）。
+
+        更简单可靠：写一个专用的一次性脚本。这里用 `brightness` 不行，
+        所以直接调用内部接口 —— kbdlight 提供一个 `--levels` 隐藏命令。
+        """
+        self._run(["levels", str(int(r)), str(int(g)), str(int(b))])
+
+    def set_rgb(self, r, g, b) -> None:
+        self._run(["%02X%02X%02X" % (int(r) & 0xFF, int(g) & 0xFF,
+                                      int(b) & 0xFF)])
+
+    def off(self) -> None:
+        self._run(["off"])
+
+    def on(self) -> None:
+        self._run(["on"])
+
+    def is_available(self) -> bool:
+        """acpi_call 是否已加载。普通用户直接看文件即可。"""
+        return os.path.exists(kbdlight.ACPI_CALL)
 
 
 # --------------------------------------------------------------------------
@@ -72,6 +227,10 @@ class KbdLightWindow(QMainWindow):
         super().__init__()
         self.read_only = read_only
 
+        # ★ EC 访问代理：普通用户进程 -> sudo kbdlight 子进程。
+        #   read_only 时连读也不走（实际上读也可以，但避免任何 sudo 调用）。
+        self.ec = Ec(force_local=read_only)
+
         # ★ 用户「意图」颜色（0..255）—— 永久保持，**不被轮询覆盖**。
         #   亮度调整只作用于它算出的电平，绝不修改它本身。
         #   这样才能做到：设 #FF6600 → 亮度 50% → 回到 100% → 仍是 #FF6600。
@@ -80,6 +239,8 @@ class KbdLightWindow(QMainWindow):
         self._current = QColor(*self._target_rgb)
         self._updating = False      # 防止回写信号造成递归
         self._last_state = None
+        # ★ 关灯前的亮度档（0..50）—— 供「开灯」恢复，避免回弹到最亮
+        self._last_level = kbdlight.LEVEL_SCALES
 
         self.setWindowTitle("键盘背光 — 机械革命翼龙15Pro")
         self.setMinimumWidth(460)
@@ -229,7 +390,7 @@ class KbdLightWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _poll(self, initial: bool = False, force: bool = False) -> None:
-        st = kbdlight.read_state()
+        st = self.ec.read_state()
         if not force and st == self._last_state and not initial:
             return
         self._last_state = st
@@ -248,7 +409,7 @@ class KbdLightWindow(QMainWindow):
 
         self.lbl_diag.setText(
             f"电平      {st['levels'][0]:2d} {st['levels'][1]:2d} {st['levels'][2]:2d}"
-            f"   (1..{kbdlight.LEVEL_MAX})\n"
+            f"   (0..{kbdlight.LEVEL_MAX}，0=全灭)\n"
             f"RGB       {st['hex']}   {st['percent']:.1f}%\n"
             f"SUPPORT   0x{st['support']:02X}  RGB支持={st['rgb_supported']}\n"
             f"TRIGGER   0x{st['trigger']:02X}  welcome={st['welcome']}\n"
@@ -323,8 +484,11 @@ class KbdLightWindow(QMainWindow):
         r, g, b = self._target_rgb
         mx = max(r, g, b)
         if mx == 0:
-            kbdlight.off()
+            self.ec.off()
             return
+        # ★ 只要真正写了非 0 亮度，就记住这一档，供「开灯」恢复
+        if level > 0:
+            self._last_level = level
         # 把每个通道从 0..255 线性映射到 0..level，四舍五入。
         # 最亮通道（mx）必然得到 level，其余按比例。
         # 例：#FF6600 (255,102,0) level=50 -> (50, 20, 0)
@@ -341,7 +505,7 @@ class KbdLightWindow(QMainWindow):
                 vals[i] = level
                 break
         nr, ng, nb = vals
-        kbdlight.set_levels(nr, ng, nb)
+        self.ec.set_levels(nr, ng, nb)
         kbdlight.save_state(kbdlight.from_levels((nr, ng, nb)))
 
     def _pick_color(self) -> None:
@@ -359,25 +523,35 @@ class KbdLightWindow(QMainWindow):
             return
         try:
             if value == 0:
-                kbdlight.off()
+                self.ec.off()
             else:
                 self._write_target(value)
         except kbdlight.KbdLightError as e:
             self._error(str(e))
 
     def _do_on(self) -> None:
+        """点亮：恢复关灯前的颜色与亮度档。
+
+        ★ 不再写死最高亮度 —— 用 _last_level 记住关灯前的滑条档位。
+        ★ 不用 kbdlight.load_state()：那个文件（/run/kbdlight.last）由 root
+          写，普通用户读不到。颜色改从 EC 回读（或者用意图色）。
+        """
         if self.read_only:
             return
-        rgb = kbdlight.load_state() or self._target_rgb
-        self._target_rgb = tuple(rgb)
+        st = self.ec.read_state()
+        if st.get("levels") and max(st["levels"]) > 0:
+            # EC 里还有颜色（比如被别的程序点亮了）—— 采纳它
+            self._target_rgb = tuple(st["rgb"])
+        # 恢复到关灯前那一档；若从未关过灯则用最高档
+        level = self._last_level or kbdlight.LEVEL_SCALES
         try:
-            self._write_target(kbdlight.LEVEL_SCALES)
+            self._write_target(level)
         except kbdlight.KbdLightError as e:
             self._error(str(e))
             return
         self._paint_preview()
         self._updating = True
-        self.slider.setValue(kbdlight.LEVEL_SCALES)
+        self.slider.setValue(level)
         self._updating = False
         QTimer.singleShot(120, lambda: self._poll(force=True))
 
@@ -385,7 +559,7 @@ class KbdLightWindow(QMainWindow):
         if self.read_only:
             return
         try:
-            kbdlight.off()
+            self.ec.off()
         except kbdlight.KbdLightError as e:
             self._error(str(e))
             return
@@ -412,37 +586,26 @@ class KbdLightWindow(QMainWindow):
 # 入口
 # --------------------------------------------------------------------------
 
-def _elevate_and_rerun() -> None:
-    """非 root 时用 pkexec/sudo 重新启动自己。"""
-    exe = os.path.abspath(sys.argv[0])
-    args = [a for a in sys.argv[1:] if a != "--no-elevate"]
-    if shutil_which := __import__("shutil").which("pkexec"):
-        os.execvp(walk := shutil_which, [walk, sys.executable, exe] + args)
-    os.execvp("sudo", ["sudo", sys.executable, exe] + args)
-
-
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    no_elevate = "--no-elevate" in argv
-    if no_elevate:
-        argv.remove("--no-elevate")
 
-    is_root = (os.geteuid() == 0)
+    if any(a in ("-V", "--version") for a in argv):
+        print(f"kbdlight-gui {__version__}  (kbdlight {kbdlight.__version__})")
+        return 0
 
-    if not is_root and not no_elevate:
-        _elevate_and_rerun()      # 不返回
-        return 1
-
-    read_only = not is_root
-    if read_only:
-        print("提示: 未以 root 运行，界面为只读模式（--no-elevate）",
-              file=sys.stderr)
+    read_only_flag = ("--read-only" in argv) or ("--no-elevate" in argv)
 
     app = QApplication(sys.argv)
     app.setApplicationName("kbdlight-gui")
     app.setApplicationDisplayName("键盘背光")
 
-    if not kbdlight.is_available():
+    # 报告实际使用的 Qt 平台后端（便于排查 Wayland/xcb 问题）
+    print(f"Qt platform: {app.platformName()}   "
+          f"(session={os.environ.get('XDG_SESSION_TYPE', '?')})",
+          file=sys.stderr)
+
+    # acpi_call 检查（只看文件，不需要 root）
+    if not os.path.exists(kbdlight.ACPI_CALL):
         QMessageBox.critical(
             None, "缺少 acpi_call",
             f"{kbdlight.ACPI_CALL} 不存在。\n\n请先运行：\n"
@@ -450,6 +613,18 @@ def main(argv=None) -> int:
             "或永久启用：\n"
             "    echo acpi_call | sudo tee /etc/modules-load.d/acpi_call.conf")
         return 1
+
+    # 探测 sudo 免密是否就绪；不可写时自动降级为只读并告知原因
+    read_only = read_only_flag
+    if not read_only and os.geteuid() != 0:
+        try:
+            Ec()._run(["state"])
+        except kbdlight.KbdLightError as e:
+            read_only = True
+            QMessageBox.warning(
+                None, "无写权限，已进入只读模式",
+                f"无法通过 sudo 调用 kbdlight：\n\n{e}\n\n"
+                "界面仍可查看状态，但不能修改。")
 
     win = KbdLightWindow(read_only=read_only)
     win.show()

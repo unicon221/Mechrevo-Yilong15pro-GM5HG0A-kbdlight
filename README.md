@@ -3,6 +3,16 @@
 在 Arch Linux 上原生控制 MECHREVO 翼龙15Pro（Uniwill GM5HG0A）键盘 RGB 背光。
 无需 Windows、无需厂商驱动。
 
+> **v0.2** — 新增真正的「全灭」（电平 0 + 默认电平同步）、PySide6 图形界面。
+> 见 [更新记录](#更新记录)。
+
+包含两部分：
+
+| 组件 | 说明 |
+|------|------|
+| `kbdlight.py` | 命令行工具 + 可 import 的 Python 模块（纯标准库）|
+| `kbdlight-gui.py` | 图形界面（PySide6 / Qt6），普通用户运行，适合 KDE/Wayland |
+
 ## 关键：协议
 
 键盘背光**不走 USB HID**（`lsusb` 里没有 `048D` 的 ITE 设备），也**不走厂商 WMI**
@@ -19,7 +29,8 @@ ACPI 方法**：
 
 ### 最重要的坑（有两个，都踩过）
 
-**坑一：`0x0769/6A/6B` 是「电平」1–50，不是 0–255 的颜色值。**
+**坑一：`0x0769/6A/6B` 是「电平」0–50，不是 0–255 的颜色值。**（`0` = 全灭，
+`1` = 最暗微光，`50` = 最亮。v0.1 时以为范围是 `1–50`，v0.2 修正。）
 
 写入 >50 的值（例如 `0xFF`）会被 EC **静默丢弃** —— 寄存器回读不变、灯不动。
 这是长期「寄存器写对了但灯不亮」的真正原因。
@@ -132,26 +143,69 @@ bit 常量：`SUPPORT_BIT=0x04`、`TRIGGER_BIT=0x20`、`WELCOME_BIT=0x80`。
 
 ## 用法
 
-```bash
-sudo modprobe acpi_call          # 通常已自动加载
+### 安装
 
-sudo kbdlight ff0000             # 设为红色并点亮
-sudo kbdlight 1e90ff             # 道奇蓝
-sudo kbdlight on                 # 点亮（恢复上次颜色/默认色）
-sudo kbdlight off                # 关灯（电平 0，完全熄灭）
-sudo kbdlight brightness 120     # 亮度 0-255（按比例缩放，保持色相；0 = 关灯）
-sudo kbdlight read               # 读当前 RGB 与相关寄存器
-sudo kbdlight demo               # 循环演示颜色
+```bash
+git clone https://github.com/unicon221/Mechrevo-Yilong15pro-GM5HG0A-kbdlight
+cd Mechrevo-Yilong15pro-GM5HG0A-kbdlight
+./install.sh                 # 装 CLI + GUI + 免密规则（需 acpi_call）
 ```
 
-已对当前用户加免密 sudo 规则（`/etc/sudoers.d/kbdlight`），日常 `sudo kbdlight ...`
-无需输密码。可用 `kbdlight`（在 `/usr/local/bin`）。
+依赖：
+
+- `acpi_call` 内核模块 — `sudo pacman -S acpi_call`（Debian/Ubuntu: `acpi-call-dkms`）
+- Python 3（GUI 另需 `pyside6`）
+
+手动安装也可以：
+
+```bash
+sudo install -m 755 kbdlight.py     /usr/local/bin/kbdlight
+sudo install -m 755 kbdlight-gui.py /usr/local/bin/kbdlight-gui
+echo 'yourname ALL=(root) NOPASSWD: /usr/local/bin/kbdlight' \
+  | sudo tee /etc/sudoers.d/kbdlight
+sudo chmod 440 /etc/sudoers.d/kbdlight
+```
+
+### 命令行
+
+```bash
+kbdlight ff0000             # 设为红色并点亮
+kbdlight 1e90ff             # 道奇蓝
+kbdlight on                 # 点亮（恢复上次颜色）
+kbdlight off                # 关灯（电平 0，完全熄灭，无微光）
+kbdlight brightness 120     # 亮度 0-255（按比例缩放，保持色相；0 = 关灯）
+kbdlight levels 25 0 25     # 直接写 0..50 电平（高级用法）
+kbdlight read               # 读当前 RGB 与相关寄存器
+kbdlight demo               # 循环演示颜色
+kbdlight --version
+```
+
+需要 root 的命令会**自动通过 sudo 重跑自己**（靠免密规则，不弹密码）。
+也可显式 `sudo kbdlight ...`。
+
+### 图形界面
+
+```bash
+# 直接运行（已随 install.sh 装好）：
+kbdlight-gui
+```
+
+GUI 以**普通用户**运行，通过 `sudo kbdlight` 子进程读写 EC（靠上面的免密规则）。
+这样主题、字体、输入法、Wayland 缩放全部跟随你的桌面环境。
+
+界面功能：颜色选择器、16 色预设、亮度滑条、开/关按钮、EC 寄存器实时诊断。
+
+> 若未配置免密 sudo，GUI 会自动进入只读模式并提示。
 
 ## 文件
 
-- `kbdlight.py` — 控制脚本（纯 Python 标准库）→ 安装为 `/usr/local/bin/kbdlight`
-- `/etc/sudoers.d/kbdlight` — 免密规则
-- `snapshots/` — 调查期间保存的 EC 快照（0x0400–0x07FF）
+- `kbdlight.py` — 命令行工具 / 模块（纯 Python 标准库）→ `/usr/local/bin/kbdlight`
+- `kbdlight-gui.py` — 图形界面（PySide6）→ `/usr/local/bin/kbdlight-gui`
+- `install.sh` — 安装/卸载脚本
+- `PROTOCOL.md` — 完整逆向笔记（寄存器全表、PE 抓取、IL 反编译结论）
+
+> WinPE 抓包流程笔记（`PE-CAPTURE.md`）与构建目录（`pe-build/`，含厂商
+> 闭源软件与第三方 ISO）**不随仓库发布**。
 
 ## 已知限制
 
@@ -171,10 +225,27 @@ sudo kbdlight demo               # 循环演示颜色
 
 ## 更新记录
 
-- **已解决：Linux 下静态固定颜色、全灭、亮度全部可用。** 三个关键坑：
-  1. 电平范围 `0..50`（不是 0..255），且 `0` 才是真·全灭；
-  2. `0x078C` 必须为 `0x01`，否则静态色被忽略；
-  3. **`0x076C/6D/6E`（默认电平）必须与当前电平同步** —— EC 有周期任务会把
-     当前电平拉回默认电平，只写 `0x0769/6A/6B` 会「灭一秒又亮」。
-- 详细逆向过程见 `PROTOCOL.md`（含 PE 抓取流程、IL 反编译结论、
-  寄存器全表、`0x0767` 逐位实测、`off` 候选逐一排除、恢复流程）。
+### v0.2
+
+- **真正的「全灭」**。`off` 现在是电平 `0/0/0`，肉眼完全无光。
+  根因：EC 有周期任务把「当前电平」`0x0769/6A/6B` 从「默认电平」
+  `0x076C/6D/6E` 同步。只写当前电平会「灭一下又亮」——
+  **两组必须一起写**。之前「写 0 被拒绝」是误判。
+- **图形界面** `kbdlight-gui.py`（PySide6 / Qt6），普通用户运行，
+  原生 Wayland。含预览色块、调色板、亮度滑条、EC 诊断。
+- 新增 `levels R G B` 子命令（直接写 0..50 电平）。
+- `is_lit()` 辅助函数；`read_state()` / CLI 正确处理电平 0。
+- 澄清 `0x0768`：可写的「期望状态」寄存器（`RGBKB_PowerStatus`），
+  但写它**不会改变 LED**（0/1/2/3 各保持 30 秒实测无反应）。
+- 完整解码 `TriggerByteFlag`，确认 `0x0767` 的 `0x04` 位是
+  `FanBoost_Trigger`（解释了早前「写 0x04 风扇满速」的谜团）。
+- 全 EC 差分（608 个寄存器）证明**不存在效果号寄存器**：
+  「静态色」与「轮转动画」的唯一差异是 `0x0767` 的 `0x80` 位。
+
+### v0.1
+
+- 首个可用版本：Linux 下静态固定颜色、开/关、亮度全部可用。
+- 根因是两个坑（电平范围 `1–50`、`0x078C` 必须为 1）。
+
+详细逆向过程见 `PROTOCOL.md`（含 PE 抓取流程、IL 反编译结论、
+寄存器全表、`0x0767` 逐位实测、`off` 候选逐一排除、恢复流程）。
