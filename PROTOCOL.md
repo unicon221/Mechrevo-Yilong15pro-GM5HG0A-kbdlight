@@ -247,19 +247,98 @@ ACPI 方法: `\_SB_.INOU.ECRR <addr04X>` / `\_SB_.INOU.ECRW <addr04X> <val02X>`
 - 后端: `GCUService.exe`（写 EC）
 - 注册表持久化: `HKLM\SOFTWARE\OEM\GamingCenter2\RGBKeyboard` → `LastEffect`, `LastWelcomeEffect`
 
-## 9. Linux 侧方案（结论）
+## 9. Linux 侧可行方案（不依赖 Windows UI）
 
-经过完整验证，**唯一可行的是方案 B：直接写 EC 寄存器**。
-
-- ~~方案 A：Wine + .NET 跑 MQTT 客户端~~ —— `GCUService.exe` 被 ConfuserEx
-  加壳，只含 Windows-JIT 专属 IL，Wine/Mono 无法执行（详见下文）。
-- ~~方案 C：在 Windows 环境下运行厂商 Control Center 抓取~~ —— 可运行，但本机
-  `PROJECT_ID=0x19` 不在厂商支持的机型表里，走兜底分支，抓到的写入序列无效。
-- **方案 B：直接 EC 写** ✔ —— 本文档第 7 节 + 后面的「BREAKTHROUGH」章节
-  就是完整协议。Linux 下通过 `\_SB_.INOU.ECRR/ECRW` 直接读写，
-  无需任何 Windows 组件。
+方案 A: **Wine + .NET** 跑一个自制 MQTT 客户端发 `Keyboard/Ctrl` → 需要 GCUBridge+GCUService 在 Wine 下跑（未验证）。
+方案 B: **直接 EC 写**（已被 UI 协议证实寄存器语义），需破解 effect → EC 字节序列（需 PE 动态抓取）。
+方案 C: **PE 侧载完整 Control Center**（本文件所述链路全打包）→ UI 点击 → ecdump watch 抓 EC。
 
 ---
+
+## PE Hosting Feasibility (verified on this build)
+
+Analysed `iso-root/sources/boot.wim` (Hiren's BootCD PE, build **22621**, Win11 22H2 kernel):
+
+| Requirement | Present | Notes |
+|---|---|---|
+| `AppXDeploymentServer.dll` | yes | full AppX stack |
+| `AppxPackaging.dll` | yes | |
+| `StateRepository*.dll` | yes | |
+| `WinTypes.dll`, `Clipc.dll` | yes | WinRT core |
+| `AppXSvc` service | yes | `Start=3` (manual), `svchost -k wsappx` |
+| `StateRepository` service | yes | `Start=2` (auto), `svchost -k appmodel` |
+| `ClipSVC` service | yes | `Start=3` |
+| `Appinfo` service | yes | `Start=3` |
+| svchost groups `wsappx` / `appmodel` | yes | registered in SOFTWARE hive |
+| `Microsoft-Windows-WinPE-AppxPackaging-Package` | installed | official MS optional component |
+| `Microsoft-OneCore-AppModel-Activation-Package` | installed | |
+| PowerShell + `Add-AppxPackage` | yes | `WindowsPowerShell\v1.0` |
+| AppX-blocking ProductPolicy | none found | |
+| `AppReadiness` service | **absent** | first-launch preparation; non-fatal |
+| `MiniNT` key | present (empty) | WinPE marker |
+
+Conclusion: the PE build officially supports AppX deployment (Microsoft ships the
+`WinPE-AppxPackaging` OC). Sideloading `CCU.WinUI` is therefore expected to work.
+Fallback if `Add-AppxPackage` fails: loose-folder launch of `CCUWinUI.exe`
+(handled automatically by `3-start-controlcenter.bat`).
+
+Note: `Microsoft.UI.Xaml.dll` (WinUI3) is NOT inside the msix, so the
+`Microsoft.WindowsAppRuntime.1.7` framework package must be installed first -
+both msix files are shipped under `ControlCenter\PreinstallKit\`.
+
+## ISO layout (built)
+
+```
+\KbdLightCapture\
+  ├─ 0-diagnose.bat               environment report -> diagnose.log
+  ├─ 1-install-driver.bat         UWACPIDriver.sys + EC verify
+  ├─ 2-capture.bat                live EC watch   -> trace.log
+  ├─ 3-start-controlcenter.bat    orchestrator (services + UI + launch)
+  ├─ 3a-sideload-uwp.bat          Add-AppxPackage CCU.WinUI
+  ├─ ecdump.exe
+  ├─ README.txt / README_CN_GBK.txt
+  └─ ControlCenter\
+       ├─ CCU_WinUI\              656 files (msix unpacked)
+       ├─ AiStoneService\         GCUBridge.exe + MyControlCenter\GCUService.exe
+       ├─ PreinstallKit\          CCU.WinUI.msix, WindowsAppRuntime 1.7 msix,
+       │                          CCU.WinUI.cer, Add-AppDevPackage.ps1
+       ├─ ZipFiles\               driver + firmware
+       ├─ UserFanTables\
+       ├─ CreateShortcut\  DefaultTool\
+```
+
+Builder: `pe-build/build-iso.sh` (uses `xorrisofs`, BIOS+UEFI El Torito,
+same boot params as the original Hiren ISO).
+
+---
+
+# Wine / Mono reverse-engineering findings (2026-02)
+
+## Why Wine cannot drive the EC
+
+* `GCUBridge.exe` **does** run under Wine-Mono 11.3.0 when its service
+  framework is bypassed by a small reflection host
+  (`MQTT_SERVER.MQTTServer.Instance()` + `StartMQTTService()`),
+  and its MQTT broker really listens on `0.0.0.0:13688`.
+* MQTT **credentials** (from `MQTTService.ClientManager::.ctor`):
+  ```
+  for i in 0..AccountNumber-1:
+      ClientId[i] = clientId + "_" + i
+      UserName[i] = clientId + "_User_" + i
+      Password[i] = clientId + "_Pwd888881772688_" + i
+  ```
+  managers: `_UWPClient = ClientManager("UWPClient", 20)`,
+  `_KeyboardClient = ClientManager("MyKeyboard", 20)`,
+  `_MyTrayClient`, `_PluginClient`.
+* `GCUService.exe` (the process that actually writes the EC) is protected by
+  **ConfuserEx anti-tamper**. Its `<Module>:.cctor` decrypts method bodies at
+  runtime. Under Wine-Mono this fails:
+  ```
+  TypeInitializationException: Invalid IL code in <Module>:.cctor ();
+      IL_000a: stloc.0
+  ```
+  → ConfuserEx emits a Windows-only JIT-compatible module initializer.
+  **Therefore GCUService can never execute under Mono/Wine.**
 
 ## What the reflection host *did* recover (valuable!)
 
@@ -373,16 +452,522 @@ EC read/write entry points: `MyECIO.MyEcCtrl::Read/Write(string name, ushort add
 
 ## Consequence
 
-ConfuserEx only encrypts **method bodies**; metadata (type names, fields,
-literals, enum values, struct layout) stays intact and can be read statically
-or via reflection.  Everything above was recovered that way, and it was enough
-to identify the EC registers and bit meanings that the Linux implementation
-uses — no Windows code needs to run.
+The only remaining viable capture path is the **WinPE ISO** (real
+Windows JIT → ConfuserEx decrypts correctly).  The API/struct knowledge above
+makes the capture much easier to interpret and allows a **minimal .NET
+reflection host** to be used inside PE instead of sideloading the whole
+WinUI app:
 
-The method bodies themselves are only needed if you want to know the exact
-order in which the vendor driver pokes registers; the results in this document
-were obtained empirically instead, by writing registers on a real machine and
-observing the keyboard.
+```csharp
+var lm = Activator.CreateInstance(asm.GetType("LightingModel.LM_Manager"));
+lm.GetType().GetMethod("LM_Init").Invoke(lm, new object[]{null});
+lm.GetType().GetMethod("LM_SetEffectALL").Invoke(lm, new object[]{
+    /*mode*/1, /*effect*/0, /*light*/100, /*speed*/0, /*dir*/-1,
+    /*color*/rgbColorStruct, /*save*/1, /*bg*/0, /*alpha*/null });
+```
+
+---
+
+# Addendum — PE kit v3: read-only ISO fix + direct EC path
+
+## Why the first PE run failed
+
+Every line printed `Access is denied.` because **`Y:\` (the ISO) is
+mounted read-only in WinPE**.  All the scripts were writing their logs
+next to themselves:
+
+```
+set "CAPDIR=%~dp0"
+"..\ecdump.exe" dump 0700 0780 > "%CAPDIR%\before.txt"   <-- ACCESS DENIED
+```
+
+The scripts themselves ran fine; only the redirections failed.
+
+### Fix
+`_common.bat` now defines two separate roots:
+
+| variable | meaning | writable |
+|----------|---------|----------|
+| `SRC` (`%SRC%`)  | where the kit was launched from (the ISO, `Y:\KbdLightCapture`) | no |
+| `WORK` (`%WORK%`) | RAM disk, `X:\KbdLightCapture` (falls back to `T:`, then `%TEMP%`) | yes |
+
+Every log / dump / staged copy goes to `WORK`.  `0-diagnose.bat`
+deliberately probes `SRC` for writability and reports the result
+instead of assuming.
+
+## `Appx` module load failure (side-load path)
+
+```
+The 'Add-AppxPackage' command was found in the module 'Appx',
+but the module could not be loaded.
+```
+
+Root cause: `Appx.psd1` declares
+
+```
+ModuleToProcess = 'Microsoft.Windows.Appx.PackageManager.Commands'
+FormatsToProcess = 'Appx.format.ps1xml'
+```
+
+`Microsoft.Windows.Appx.PackageManager.Commands.dll` references the
+WinRT metadata assembly **`Windows`**, which is resolved from
+`%SystemRoot%\System32\**WinMetadata\**windows.*.winmd`.
+
+**WinPE does not ship `System32\WinMetadata\` at all** (verified by
+listing the `boot.wim`), so the assembly cannot be resolved and the
+module fails to load.  The PE does contain `AppXDeploymentServer.dll`,
+`AppxPackaging.dll`, `StateRepository*`, and servicing
+`Microsoft-OneCore-APPXDeployment-*` packages, so it *looks* capable —
+but the WinRT projection metadata is missing.
+
+Consequence: the side-load path is fragile.  It is kept only as a
+fallback; the primary path no longer needs AppX.
+
+## The direct EC path (primary)
+
+`AcpiCtrl` and `MyEcCtrl` are fully hollowed by ConfuserEx — every
+method body is `ldstr "Runtime exception"` + `throw`.  Only the
+**P/Invoke declarations survive**, because those are metadata:
+
+```csharp
+pinvokeimpl("kernel32.dll")    CreateFile / DeviceIoControl / CloseHandle
+pinvokeimpl("ACPIDriverDll.dll") SMAPCTable
+```
+
+That is enough to build an equivalent client from scratch.  `KbdHost.exe`
+now has stand-alone `ec-*` commands that never touch the packed code:
+
+```
+KbdHost.exe ec-info                 read 0x0760,0x0765..0x076B
+KbdHost.exe ec-dump 0700 0780       dump a register range
+KbdHost.exe ec-set 0769 64          write one byte
+KbdHost.exe ec-static FF0000 [lv]   write a static single colour
+```
+
+Device access:
+
+```csharp
+h = CreateFile("\\.\ACPIDriver", GENERIC_READ|GENERIC_WRITE,
+               FILE_SHARE_READ|FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0, 0);
+// buffer = { uint32 addr; uint32 data; }   (8 bytes, little endian)
+DeviceIoControl(h, 0x9C40A488, buf, 8, out, 8, out n, 0);   // EC read
+DeviceIoControl(h, 0x9C40A48C, buf, 8, out, 8, out n, 0);   // EC write
+```
+
+`ec-static` writes, in order:
+
+```
+0x0760 <- 0x0F     mode
+0x0769 <- level    RGB level R
+0x076A <- level    RGB level G
+0x076B <- level    RGB level B
+0x076C <- r        RGB default R
+0x076D <- g        RGB default G
+0x076E <- b        RGB default B
+0x0767 <- 0x20     RGBKeybaord_Trigger   (self-clearing)
+```
+
+then reads the registers back.
+
+## The driver
+
+`ControlCenter\ZipFiles\UWACPIDriver.zip` contains a
+signed **KMDF 1.15 kernel driver**.  From `UWACPIDriver.inf`:
+
+```
+[Standard.NTamd64]
+%UWACPIDriver.DeviceDesc%=UWACPIDriver_Device, ACPI\INOU0000
+
+[UWACPIDriver_Service_Inst]
+ServiceType    = 1     ; SERVICE_KERNEL_DRIVER
+StartType      = 3     ; SERVICE_DEMAND_START
+ServiceBinary  = %12%\UWACPIDriver.sys
+```
+
+`UWACPIDriver.DeviceDesc = "ACPIDriver"` — i.e. the Win32 device name
+`\\.\ACPIDriver`.
+
+The HWID `ACPI\INOU0000` is exactly this machine's DSDT node:
+
+```asl
+Device (INOU)
+{
+    Name (_HID, "INOU0000")
+    Name (_UID, Zero)
+    ...
+    Name (_CRS, ResourceTemplate () {
+        Memory32Fixed (ReadWrite, 0xFED50000, 0x00001000)
+    })
+    ...
+}
+```
+
+WinPE 22621 already ships `Wdf01000.sys` / `WdfLdr.sys` (KMDF is
+backward compatible), so the driver installs and binds normally.
+`1-install-driver.bat` tries, in order:
+
+1. `drvload <inf>`      (WinPE-native, binds to the live device)
+2. `pnputil /add-driver <inf> /install`
+3. `pnputil /scan-devices`
+4. `sc create UWACPIDriver type= kernel start= demand` + copy the `.sys`
+
+## Pre-unpacked costura payload
+
+`GCUService.exe` embeds ~40 dependencies as `costura.<name>.dll.compressed`
+(raw deflate, no zlib header).  They are now **decompressed at ISO build
+time on Linux** so they sit next to `GCUService.exe` as plain DLLs:
+
+```python
+zlib.decompress(open(f,'rb').read(), -15)
+```
+
+36 files, including `naudio.dll`, `librehardwaremonitorlib.dll`,
+`newtonsoft.json.dll`, `hidsharp.dll`, `m2mqtt.net.dll`,
+`system.management.automation.dll`.
+
+## Driver register map (repeated for convenience)
+
+```
+0x0760  mode                 default 0x0F
+0x0765  SUPPORT_BYTE1        0xA1
+0x0766  SUPPORT_BYTE2        bit2 = RGB  (seen 0x94)
+0x0767  TRIGGER_BYTE         SELF-CLEARING
+          0x02 light bar / 0x20 RGB keyboard / 0x40 RGB logo
+          0x80 RGB keyboard welcome
+0x0768  STATUS_BYTE          0..5
+0x0769  RGB level R          0x00,0x28,0x3C,0x50,0x64,0x78,0x8C,0xA0,0xB4,0xC8
+0x076A  RGB level G
+0x076B  RGB level B
+0x076C  RGB default R
+0x076D  RGB default G
+0x076E  RGB default B
+0x076F  MUSIC_NO
+0x078C  SINGLEKBL / EC_LOGO_CONFIRM
+0x0D00  AP_OEM_SingleZone    = 0x05
+0x0D02  RGB copy             = 0x32
+0x0D03  RGB copy             = 0x32
+
+NEVER WRITE (fan control):
+  0x0751 0x0741 0x078C 0x078E 0x0748
+  (0x0751 = 0x40 once caused maximum fan speed)
+```
+
+---
+
+# Addendum — Chinese (mojibake) fix in WinPE
+
+## Symptom
+
+Every Chinese character in the PE printed as garbage / boxes.
+
+## Investigation
+
+Three things were checked in `boot.wim`:
+
+1. **NLS code page** — `HKLM\SYSTEM\...`/`SOFTWARE\Microsoft\Windows NT\
+   CurrentVersion\NLS\CodePage`:
+
+   ```
+   ACP    = 936
+   OEMCP  = 936
+   MACCP  = 10008
+   ```
+
+   Already Simplified Chinese. **Not the problem.**
+
+2. **Font files + GDI registration** — `Windows\Fonts` contains the CJK fonts
+   and `...\CurrentVersion\Fonts` registers them:
+
+   ```
+   'simsun & nsimsun (truetype)'      -> simsun.ttf
+   'noto sans cjk sc (truetype)'      -> notosanscjk-regular.ttc
+   'noto sans cjk sc bold (truetype)' -> notosanscjk-bold.ttc
+   ```
+   plus `FontSubstitutes`: `Microsoft YaHei -> SimSun`.
+
+   **Not the problem either.**
+
+3. **The real cause — two independent bugs, both mine:**
+
+   **a) `chcp 437`**
+
+   The scripts forced the console onto the US code page:
+
+   ```bat
+   chcp 437 >nul 2>&1
+   ```
+
+   This overrode the system's native 936.  Any byte >0x7F was then
+   reinterpreted as CP437 box-drawing characters.
+
+   **b) The console font list has no CJK face**
+
+   The Windows console does **not** use the GDI font table.  It uses a
+   separate list:
+
+   ```
+   HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Console\TrueTypeFont
+        "0"  = "Lucida Console"
+        "00" = "Consolas"
+   ```
+
+   Neither `Lucida Console` nor `Consolas` has CJK glyphs.  So even with
+   code page 936 the console had no way to *draw* a Chinese character.
+
+   The per-user face comes from `DEFAULT\Console\FaceName`, which was
+   `__DefaultTTFont__` — i.e. "resolve slot `0`" → `Lucida Console`.
+
+## Fix
+
+### WIM hives  (`patch-hive-fonts.py`, run by `build-iso.sh` stage 0)
+
+`SOFTWARE` — extend the console font list:
+
+```
+"0"      = "Lucida Console"
+"00"     = "Consolas"
+"000"    = "SimSun"             <- added
+"0000"   = "NSimSun"            <- added
+"00000"  = "Noto Sans CJK SC"   <- added
+"000000" = "Microsoft YaHei"    <- added
+```
+
+`DEFAULT` — make SimSun the default face:
+
+```
+FaceName         = "SimSun"     (was "__DefaultTTFont__")
+FontFamily       = 0
+FontWeight       = 400
+FontSize         = 18
+ScreenBufferSize = (120 << 16) | 5000
+WindowSize       = (120 << 16) | 40
+```
+
+Note: python-hivex has no `value_set_value`; only `node_set_value`.
+`node_set_value` **replaces** an existing value with the same key, so it
+works as an upsert.
+
+Re-injection uses `wimlib-imagex update` reading commands from **stdin**
+(`--command` may only be given once):
+
+```sh
+printf 'add %s /Windows/System32/config/SOFTWARE\nadd %s /Windows/System32/config/DEFAULT\n' \
+    "$TMP/SOFTWARE" "$TMP/DEFAULT" | wimlib-imagex update "$WIM" 1
+```
+
+### Scripts
+
+* every `.bat` now does `chcp 936`
+* `_common.bat` also re-applies the font registry at run time (once per
+  boot, guarded by a flag file in `%TEMP%`) because registry edits do not
+  always survive a WinPE boot:
+
+```bat
+reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Console\TrueTypeFont" ^
+        /v 000 /t REG_SZ /d SimSun /f
+reg add "HKCU\Console" /v FaceName   /t REG_SZ    /d SimSun /f
+reg add "HKCU\Console" /v FontFamily /t REG_DWORD /d 0      /f
+```
+
+* `README_CN_GBK.txt` is GBK-encoded to match code page 936.
+
+## Verification
+
+Extracted `SOFTWARE` from the `boot.wim` **inside the finished ISO** and
+confirmed the six-entry font list and `NLS\CodePage\ACP = 936`.
+
+Everything else in the kit is unchanged and byte-identical.
+
+---
+
+# Addendum — PE run #2 analysis (`tee` missing, driver OK)
+
+## What the logs proved
+
+`log/driver.log` and `log/diagnose.log` from the second PE boot:
+
+### Driver: WORKS
+
+```
+--- drvload ---
+DrvLoad: Unable to load ...\UWACPIDriver.inf (Error 0x80070103).
+  drvload exit=3
+
+--- pnputil add-driver ---
+Adding driver package:  UWACPIDriver.inf
+Driver package added successfully. (Already exists in the system)
+Published Name:         oem325.inf
+Driver package is up-to-date on device: ACPI\INOU0000\0
+
+--- service check ---
+SERVICE_NAME: UWACPIDriver
+        TYPE               : 1  KERNEL_DRIVER
+        STATE              : 4  RUNNING
+```
+
+* `0x80070103` = `ERROR_NO_MORE_ITEMS` — drvload's way of saying "already
+  bound", **not** a failure.
+* `ACPI\INOU0000\0` means PnP matched the ACPI node from the DSDT.
+* Service `UWACPIDriver` is **RUNNING**.
+
+### EC access: WORKS
+
+```
+0x0766 = 0x94
+0x0765 = 0xA1
+```
+
+Read through `\\.\ACPIDriver` with `ecdump.exe read 0766`.  So the whole
+EC path is functional.
+
+### The actual failure: no `tee.exe`
+
+```
+[3/4] Reading current EC registers ...
+'tee' is not recognized as an internal or external command,
+operable program or batch file.
+```
+
+`3-start-controlcenter.bat` piped KbdHost output through `| tee <file>`.
+WinPE has no `tee`.  Every one of the six `tee` invocations aborted, so
+the script died at the first one and the prompt for a colour was never
+reached.  KbdHost itself was fine.
+
+Also `0-diagnose.bat` used `where powershell` — WinPE has no `where.exe`
+either.
+
+## Fixes
+
+### `tee` replacement
+
+WinPE has no tee, so the `:run` helper appends to a log and then echoes
+the log to the console:
+
+```bat
+:run
+set "RUNLOG=%~1"
+set "RUNCMD="
+shift
+:run_collect
+if "%~1"=="" goto run_go
+set "RUNCMD=!RUNCMD! %~1"     REM no parentheses: %1 must re-parse
+shift
+goto run_collect
+:run_go
+if defined RUNCMD set "RUNCMD=!RUNCMD:~1!"
+echo --- %DATE% %TIME% : !RUNCMD! --- >> "%RUNLOG%" 2>&1
+!RUNCMD! >> "%RUNLOG%" 2>&1
+set "RC=!errorlevel!"
+echo --- exit=!RC! --- >> "%RUNLOG%" 2>&1
+type "%RUNLOG%"
+exit /b 0
+```
+
+Two cmd traps handled here:
+
+* `%*` does **not** re-expand after `shift`, so the arguments are
+  collected one by one.
+* `%1` inside a parenthesised block is expanded when the **whole block**
+  is parsed, so the accumulation must not use `( ... )`.
+
+### `where` replacement
+
+```bat
+if exist "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" (
+    echo [OK] powershell.exe
+) else (
+    echo [MISS] powershell.exe
+)
+```
+
+### `errorlevel` inside blocks
+
+`1-install-driver.bat` had
+
+```bat
+if errorlevel 1 ( echo ... ) else ( echo ... )
+```
+
+inside an outer parenthesised block.  `errorlevel` is expanded at parse
+time of the enclosing block, so it read a stale value.  Rewritten with
+`goto` labels and the `&&` / `set` idiom:
+
+```bat
+set "HAVESVC=0"
+sc query UWACPIDriver 2>nul | findstr /i /c:"SERVICE_NAME: UWACPIDriver" >nul 2>&1 && set "HAVESVC=1"
+if "%HAVESVC%"=="0" goto :drv_manual
+```
+
+### `EcRead` ABI bug
+
+The old heuristic
+
+```csharp
+data = (d1 != 0) ? d1 : (d4 != 0 ? d4 : (di != 0 ? di : (uint)ret));
+```
+
+returned **0 for a legitimate zero register**, and could pick the wrong
+field.  The Uniwill driver copies the whole `{addr,data}` struct to the
+output buffer, so the value is at offset 4:
+
+```csharp
+uint d4 = BitConverter.ToUInt32(outb, 4);
+uint d1 = BitConverter.ToUInt32(outb, 0);
+uint di = BitConverter.ToUInt32(inb, 4);
+if (d4 != 0 || d1 == addr) data = d4;      // normal path
+else if (di != 0)          data = di;
+else if (d1 != 0)          data = d1;
+else                       data = 0;       // genuine zero
+```
+
+A new `ec-raw <addr>` command dumps the whole 8-byte round-trip so the
+ABI can be confirmed on the real machine:
+
+```
+[ec] addr=0766 ok=True ret=8
+[ec] out: 66-07-00-00-94-00-00-00
+[ec] decoded = 94
+```
+
+### `1-install-driver.bat` return code
+
+Now exits **1** when the EC is not readable, and 0 when it is, so
+`3-start-controlcenter.bat` can report honestly:
+
+```bat
+call "%SRC%\1-install-driver.bat" /auto
+set "DREXIT=!errorlevel!"
+if "!DREXIT!"=="0" ( echo   [OK] driver installed and EC readable
+) else ( echo   [WARN] EC not verified by the driver step ) 
+```
+
+### `ec-static` widened
+
+`ec-info` / `ec-static` now show the full relevant window:
+
+```
+0x0760 0x0765 0x0766 0x0767 0x0768
+0x0769 0x076A 0x076B 0x076C 0x076D 0x076E
+0x076F 0x0748 0x078C 0x0D00 0x0D02 0x0D03
+```
+
+before and after a 300 ms settle delay, so the diff shows exactly which
+registers the write touched.
+
+## Environment facts learned
+
+| item | value |
+|---|---|
+| PE build | 22621.2428, Microsoft Windows 11 Enterprise |
+| drives | `C: D: E: X: Y:` (X: = RAM disk, 4.2 GB free) |
+| AppXSvc | RUNNING |
+| StateRepository | RUNNING |
+| Appinfo | RUNNING |
+| ClipSVC | STOPPED (exit 1077) |
+| AppReadiness | **does not exist** |
+| `Import-Module Appx` | FAIL — `Could not find Windows Runtime type 'Windows.Management.Deployment.StubPackageOption'` |
+| .NET | Framework64 v4.0.30319 present |
+| working path | `X:\KbdLightCapture` writable, source `Y:\KbdLightCapture` read-only (correct) |
 
 ---
 
@@ -415,7 +1000,7 @@ the trace showed `0769 00 -> FF`, but the keyboard stayed on its animation.
 The fix is a one-liner:
 
 ```python
-level = clamp(round(v / 255.0 * 50.0), 1, 50)   # 0 stays 0 (= channel off)
+level = clamp(round(v / 255.0 * 50.0), 0, 50)   # 0 stays 0 (= fully dark)
 ```
 
 Verification on the real machine:
@@ -504,10 +1089,10 @@ ADDR_EC_MAIN_FAN_L_DUTY_BYTE = 0x075B
 ADDR_EC_MAIN_FAN_R_DUTY_BYTE = 0x075C
 ```
 
-A long register trace showed them oscillating between `0x3C` and `0x47`
-roughly every 300 ms for over two minutes, perfectly correlated with the
-temperature registers.  That was **the fans tracking temperature**, not a
-keyboard animation.  Don't be misled again.
+The `trace.log` from the WinPE run showed them oscillating between
+`0x3C` and `0x47` roughly every 300 ms for the whole 124 s capture.  That
+was **the fans tracking temperature**, not a keyboard animation.  Don't be
+misled again.
 
 Also note `ADDR_CPU_VRM_CURRENT_LIMIT_BYTE = 0x0753` and
 `ADDR_CPU_VRM_MAXI_CURRENT_LIMIT_BYTE = 0x0754` sit right next to the RGB
@@ -609,41 +1194,73 @@ logo trigger is enabled.
 **Rule: for a static keyboard colour, leave `0x10`, `0x40` and `0x80` all
 clear.**  Only pulse `0x20`.
 
-## `0x0768` (STATUS_BYTE) is not a reliable on/off switch
+## `0x0768` (STATUS_BYTE) is a *status* register, not a switch
 
-It only accepts `0..3`; writing `4`/`5` is clamped back to `0`/`1`:
+It accepts `0..3` and keeps the value (it is a writable register, not a
+clamp), but writing it does **not** change the LED output:
 
 ```
-write 0 -> 0   (Off)
-write 1 -> 1   (On)
-write 2 -> 2   (Lighting_off)
-write 3 -> 3   (Lighting_on)
+write 0 -> 0   (Off)           LED unchanged
+write 1 -> 1   (On)            LED unchanged
+write 2 -> 2   (Lighting_off)  LED unchanged  <- tested for 30s, no effect
+write 3 -> 3   (Lighting_on)   LED unchanged
 write 4 -> 0   (Welcome_off  -> clamped)
 write 5 -> 1   (Welcome_on   -> clamped)
 ```
 
-Observed desync: after a successful colour write, `0x0768` sometimes read
-`0x00` while the keyboard was clearly lit, and `0x0768 <- 0x00` did **not**
-turn the keyboard off.  It mirrors what the EC lighting task thinks its
-power state is; it is **not** something the host should drive to turn the
-LEDs on or off.  Use `0x078C` for enable and leave `0x0768` alone.
+It mirrors what the EC lighting task thinks its power state is, i.e. it is a
+*desired-state* store that a vendor-side consumer would act upon.  The
+consumer (`ILM_RGBKB_SetPower`) is ConfuserEx-stubbed in GCUService, and the
+EC firmware itself never acts on `0x0768` alone.  **Leave it alone.**
 
-## Do not write 0 to the level registers
+## ★★ `0x0769/6A/6B = 0` DOES turn the LEDs fully off — the real gotcha
 
-`RGB_LEVEL_MIN = 1`.  Writing `0x00` to `0x0769/6A/6B` is rejected — the
-read-back keeps the previous value.  To make one channel dark you must write
-another channel; there is no per-channel "off" other than turning the whole
-keyboard off.
+**Corrected 2026-10-16.**  Earlier revisions of this document claimed that
+`0x00` was rejected by the EC and that `off` could only mean "level 1".
+Both claims were wrong.  What actually happens:
 
-`0x076C/6D/6E` (DEFAULT R/G/B) carry the same 1..50 constraint.  A leftover
-invalid value there (we once had `0x076D = 0xFF`) leaves the EC lighting task
-in a bad state where subsequent writes have no effect.  **Always write legal
-levels into the default registers too.**
+> The EC has a periodic task that copies the **current levels**
+> (`0x0769/6A/6B`) from the **default levels** (`0x076C/6D/6E`).
+
+So:
+
+| what you write | what you see |
+|---|---|
+| `0x0769/6A/6B <- 0/0/0` only | goes dark for ~1 s, then **snaps back** to the default levels |
+| `0x0769/6A/6B <- 0/0/0` **and** `0x076C/6D/6E <- 0/0/0`, then `0x0767 <- 0x20` | **stays fully dark** (verified >30 s) |
+| write 0 but **omit** `0x0767 <- 0x20` | no change at all (trigger is required) |
+
+The "read-back keeps the previous value" observation that started this myth
+was just the resync: reading 1 s after the write shows the restored default.
+
+`0` and `1` are genuinely different:
+
+```
+level 0  ->  LED fully off, no glow
+level 1  ->  dimmest step, still clearly visible in a dark room
+```
+
+Working sequence (this is what `kbdlight.off()` does):
+
+```
+0x078C <- 0x01                 # enable static colour
+0x0769 <- 0x00                 # current R
+0x076A <- 0x00                 # current G
+0x076B <- 0x00                 # current B
+0x076C <- 0x00                 # DEFAULT R   <- must match, or it snaps back
+0x076D <- 0x00                 # DEFAULT G
+0x076E <- 0x00                 # DEFAULT B
+0x0767 <- 0x20                 # trigger, write-and-clear
+```
+
+`0x076C/6D/6E` still must never hold an *invalid* value (`> 50`, e.g. the
+`0xFF` once left there by the vendor tool) — that wedges the EC lighting
+task.  Valid means `0..50`, and `0` is now known to be legal and meaningful.
 
 ## Recovery procedure if the keyboard goes dark
 
 1. `0x078C <- 0x01`
-2. `0x076C/6D/6E <- 32 32 32`   (legal defaults)
+2. `0x076C/6D/6E <- 32 32 32`   (legal defaults, doubles as "restore colour")
 3. `0x0769/6A/6B <- 32 32 32`
 4. `0x0767 <- 0x00`   (clear all sticky bits)
 5. `0x0767 <- 0x20`   (trigger)
@@ -668,65 +1285,94 @@ storage.  `0x00B1/0x00B2` are the kernel's `KEY_KBDILLUMDOWN` /
 
 ---
 
-# Addendum — there is NO "off" register; `off` = level 1
+# Addendum — `off` = level **0**, and you must write the DEFAULT levels too
 
-After trying and rejecting every plausible switch, the answer turned out to
-be the level registers themselves.
+**Corrected 2026-10-16 (supersedes the earlier "there is NO off, use level 1"
+addendum).**
 
-## What we tried first (all failed)
+After rejecting every plausible switch first, the answer turned out to live in
+the level registers after all — but with a hidden coupling that made naive
+tests fail.
+
+## The trap: `0x076C/6D/6E` is the master
+
+> **The EC runs a periodic task that copies the current levels
+> (`0x0769/6A/6B`) from the default levels (`0x076C/6D/6E`).**
+
+That is the whole story.  Every confusing observation we had is a consequence:
+
+| write | read-back right after | ~1 s later | LED |
+|---|---|---|---|
+| current `<- 0/0/0` only | `0x00 0x00 0x00` | `0x32 0x19 0x00` (the defaults!) | dark for a second, then back on |
+| current + default `<- 0/0/0` | `0x00 0x00 0x00` | `0x00 0x00 0x00` | **stays dark** |
+| current `<- 0/0/0`, no trigger | unchanged | unchanged | nothing |
+
+So the old note "writing `0x00` is rejected, the read-back keeps the previous
+value" was a misread of the resync: we were reading ~1 s after the write and
+measuring the *restored default*, not a rejection.
+
+Likewise "we saw it go dark once and never reproduced it" — the one success
+happened while the default registers happened to still be `0/0/0` from an
+earlier experiment.
+
+## What we tried (all genuinely ineffective)
 
 | candidate | write | result |
 |---|---|---|
-| `0x0768` STATUS | `0x00` | no change (it is a state mirror, not a control) |
+| `0x0768` STATUS | `0/1/2/3`, held 30 s each | LED never changed (state mirror, not a switch) |
 | `0x078C` SINGLEKBL_ENABLE | `0x00` | no change (it is an *enable*, not a switch) |
-| `0x078E` SUPPORTPOWER | `0xE8` | no change |
+| `0x078E` SUPPORTPOWER | `0xE8` | no change (read-only capability bits) |
 | `0x00B1` LEVEL_DOWN | `0x01` x5 | no change (pure notification port) |
 | `0x0767` | `0x00` | no change (only clears pending triggers) |
-| `0x0769/6A/6B` | `0x00` | **rejected by the EC** (below `RGB_LEVEL_MIN`) |
+| `0x0782` Light_SetToChinaMode | `0x00` / `0x01` | no change (BIOS OEM byte) |
+| `0x0D02/0D03` | `0x00` | no change |
+
+A full EC diff (0x700-0x7FF, 0xD00-0xD5F, 0xF00-0xFFF, 608 registers) between
+"static colour" and "welcome animation" showed exactly **one** meaningful
+byte: `0x0767` (`0x00` vs `0x80`).  There is no effect-number register.
 
 ## The answer
 
 ```
-RGB_LEVEL_MIN = 1
+level 0  ->  LED fully off,   no glow at all
+level 1  ->  dimmest step,    still clearly visible in a dark room
+level 50 ->  max brightness
 ```
 
-Writing **level 1 to all three channels** makes the keyboard dark to the eye.
-Writing `0` is rejected — the read-back keeps the old value — which is why
-"just write zero" never worked.
-
-So:
+The working sequence (exactly what `kbdlight.off()` does):
 
 ```
-off  ->  0x0769 = 0x01, 0x076A = 0x01, 0x076B = 0x01, 0x078C = 0x01, 0x0767 = 0x20
-on   ->  restore the saved colour levels, same enable + trigger
+0x078C <- 0x01     # enable static colour
+0x0769 <- 0x00     # current R
+0x076A <- 0x00     # current G
+0x076B <- 0x00     # current B
+0x076C <- 0x00     # DEFAULT R   <- without these the EC snaps back
+0x076D <- 0x00     # DEFAULT G
+0x076E <- 0x00     # DEFAULT B
+0x0767 <- 0x20     # trigger (write-and-clear, reads back 0)
 ```
 
-Verified on the machine: `kbdlight off` -> keyboard dark, `kbdlight on` ->
-keyboard back to the previous colour.
-
-### Why this is the right model
-
-The EC exposes a **brightness ladder**, not an on/off line.  `RGBKB_Level`
-spans `1..50` and `1` is simply the bottom rung — visually indistinguishable
-from off.  That also matches the `HIDKeyboard` constants:
-
-```
-EC_RGBKBBKL_LEVEL_DOWN = 0x00B1     (KEY_KBDILLUMDOWN)
-EC_RGBKBBKL_LEVEL_UP   = 0x00B2     (KEY_KBDILLUMUP)
-EC_RGBKBBKL_LEVEL_UPDATE = 0x00F0
-```
-
-Those are the kernel's brightness-key notification ports.  A firmware that
-models the backlight as a ladder has no separate power bit — it just drives
-the rung to its minimum.  `0x0768`/`0x078C` are *policy* state (what the OS
-asked for), consumed by the EC lighting task, not electrical switches.
+Verified on the machine: stays fully dark for 30+ s (before the fix it went
+dark for ~1 s and snapped back).  `kbdlight on` restores the saved colour.
 
 ### Consequence for `brightness`
 
-Because `1` is the floor, a `brightness 0` request must map to level `1`,
-not `0`.  `to_level(0)` returning `0` is fine on its own (the EC rejects it
-and keeps the old value), but the CLI now treats `brightness 0` as "off" and
-routes it through the same level-1 path.
+`to_level(0)` returns `0`, which is now a legal and meaningful value.  The
+CLI routes `brightness 0` straight to `off()`.
+
+## Model summary
+
+The EC exposes a **brightness ladder `0..50`** where `0` really is zero — but
+it also mirrors the ladder into two identical register pairs, and the default
+pair wins on a timer.  Keep both in sync and everything behaves:
+
+```python
+def set_levels(r, g, b):
+    write(0x0769, r); write(0x076A, g); write(0x076B, b)   # current
+    write(0x076C, r); write(0x076D, g); write(0x076E, b)   # default (must match)
+    write(0x078C, 0x01)                                     # enable
+    write(0x0767, 0x20)                                     # trigger
+```
 
 ## Bonus finding: this machine's PROJECT_ID is not in the enum
 
@@ -764,20 +1410,27 @@ no visible effect) and why the direct EC route was the only viable one.
 ADDR_TRIGGER_BYTE       = 0x0767   bit5=0x20 trigger (self-clearing)
                                    bit4=0x10, bit6=0x40, bit7=0x80 sticky
 ADDR_STAUTS_BYTE        = 0x0768   0..3, state mirror only
-ADDR_RGBKB_LEVEL_R/G/B  = 0x0769/0x076A/0x076B       1..50
-ADDR_RGBKB_LEVEL_DEFAULT_R/G/B = 0x076C/0x076D/0x076E 1..50
+ADDR_RGBKB_LEVEL_R/G/B  = 0x0769/0x076A/0x076B       0..50  (0 = dark)
+ADDR_RGBKB_LEVEL_DEFAULT_R/G/B = 0x076C/0x076D/0x076E 0..50 (mirror; EC resyncs)
 ADDR_SINGLEKBL_ENABLE   = 0x078C   must be 0x01
 ADDR_SINGLEKBL_SUPPORTPOWER = 0x078E
 
-# set a static colour
-0x0769 <- level_r       # clamp(round(v/255*50), 1, 50)
+# current levels (0..50; 0 = channel off / fully dark)
+0x0769 <- level_r       # clamp(round(v/255*50), 1, 50) for lit colours
 0x076A <- level_g
 0x076B <- level_b
+# DEFAULT levels -- MUST mirror the current ones or the EC will resync
+0x076C <- level_r
+0x076D <- level_g
+0x076E <- level_b
 0x0767 <- 0x20          # apply
 
-# minimum levels = off
-0x0769 <- 0x01
-0x076A <- 0x01
-0x076B <- 0x01
+# full off
+0x0769 <- 0x00
+0x076A <- 0x00
+0x076B <- 0x00
+0x076C <- 0x00
+0x076D <- 0x00
+0x076E <- 0x00
 0x0767 <- 0x20
 ```
