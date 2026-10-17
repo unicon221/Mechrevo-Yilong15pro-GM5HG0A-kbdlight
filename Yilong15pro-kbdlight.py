@@ -58,12 +58,13 @@ Yilong15pro-kbdlight — 机械革命翼龙15Pro (Uniwill GM5HG0A) 键盘 RGB �
     sudo Yilong15pro-kbdlight brightness 0-255  # 亮度（按比例缩放，保持色相）
     sudo Yilong15pro-kbdlight levels R G B      # 直接写 0..50 电平（高级用法）
     sudo Yilong15pro-kbdlight read              # 读当前状态（支持 --json）
+    sudo Yilong15pro-kbdlight restore           # 恢复上次状态（开机服务用）
     sudo Yilong15pro-kbdlight demo              # 循环演示颜色
 """
 
 from __future__ import annotations
 
-__version__ = "0.3"
+__version__ = "0.4"
 
 import json
 import os
@@ -79,6 +80,7 @@ __all__ = [
     "ADDR_DEF_R", "ADDR_DEF_G", "ADDR_DEF_B", "ADDR_SINGLEKBL",
     "SINGLEKBL_ENABLE", "TRIGGER_BIT", "WELCOME_BIT", "SUPPORT_BIT",
     "LEVEL_OFF", "LEVEL_MIN", "LEVEL_MAX", "LEVEL_SCALES", "STATE_FILE",
+    "STATE_OFF", "save_state", "load_state", "load_state_explicit",
     "is_lit",
     # 异常
     "KbdLightError", "NotRootError", "AcpiCallMissingError",
@@ -136,7 +138,10 @@ LEVEL_MAX = 50         # RGB_LEVEL_MAX = 0x32
 LEVEL_SCALES = 50      # RGB_LEVEL_SCALES = 0x32
 VALUE_TO_LEVEL_RATIO = 5   # RGB_VALUE_TO_LEVEL_RATIO
 
-STATE_FILE = "/run/Yilong15pro-kbdlight.last"   # 记录上次颜色，供 on 恢复
+STATE_FILE = "/var/lib/Yilong15pro-kbdlight/state"   # 上次状态（持久，重启保留）
+STATE_DIR = os.path.dirname(STATE_FILE)
+# 旧位置（v0.3 之前用 /run，tmpfs，重启即失）——仅用于迁移
+STATE_FILE_OLD = "/run/Yilong15pro-kbdlight.last"
 
 # GUI 预设色板（0..255 尺度）
 PALETTE = [
@@ -371,12 +376,14 @@ def off() -> None:
     """
     set_levels(LEVEL_OFF, LEVEL_OFF, LEVEL_OFF,
                enable=True, trigger=True, defaults=True)
+    # ★ 记录「关灯」状态，供开机服务恢复（v0.4）
+    save_state(None)
 
 
 def on(rgb=None) -> tuple:
     """点亮，返回使用的颜色 (r,g,b)。
 
-    颜色优先级：显式参数 > /run/Yilong15pro-kbdlight.last > EC 默认色 > 兜底青色。
+    颜色优先级：显式参数 > 状态文件 > EC 默认色 > 兜底青色。
     """
     if rgb is None:
         rgb = load_state()
@@ -487,18 +494,60 @@ def read_state() -> dict:
 # --------------------------------------------------------------------------
 # 状态持久化 / 颜色解析
 # --------------------------------------------------------------------------
+#
+# 状态文件格式：
+#     RRGGBB      —— 点亮状态，颜色为 RRGGBB（0..255 尺度）
+#     off         —— 关灯状态
+#
+# 为什么要记 "off"：用户关灯后重启，开机服务需要知道「上次是全灭」，
+# 而不是「上次颜色是什么」。只存颜色的话无法区分关灯和黑色。
+#
+# 位置用 /var/lib（FHS 规定的持久状态目录）。旧版用 /run（tmpfs），
+# 重启就丢，所以升级后首次读写会自动迁移。
+
+STATE_OFF = "off"
+
+
+def _migrate_state() -> None:
+    """从旧位置 /run 迁移到 /var/lib（仅当新文件不存在时）。"""
+    try:
+        if os.path.exists(STATE_FILE) or not os.path.exists(STATE_FILE_OLD):
+            return
+        with open(STATE_FILE_OLD) as f:
+            s = f.read().strip()
+        if re.fullmatch(r"[0-9A-Fa-f]{6}", s):
+            os.makedirs(STATE_DIR, exist_ok=True)
+            with open(STATE_FILE, "w") as f:
+                f.write(s.upper())
+    except OSError:
+        pass
+
 
 def save_state(rgb) -> None:
-    """保存 0..255 尺度的颜色（人类习惯），读取时再换算。"""
+    """保存状态。
+
+    rgb = (r, g, b)  -> 点亮，存 RRGGBB
+    rgb = None       -> 关灯，存 "off"
+    """
     try:
+        os.makedirs(STATE_DIR, exist_ok=True)
         with open(STATE_FILE, "w") as f:
-            f.write("%02X%02X%02X" % tuple(rgb))
+            if rgb is None:
+                f.write(STATE_OFF)
+            else:
+                f.write("%02X%02X%02X" % tuple(rgb))
     except OSError:
         pass
 
 
 def load_state():
-    """读取上次保存的颜色，失败返回 None。"""
+    """读取上次状态。
+
+    返回：
+        (r, g, b)  —— 上次是点亮，颜色为 0..255
+        None       —— 上次是关灯，或者文件不存在/损坏
+    """
+    _migrate_state()
     try:
         with open(STATE_FILE) as f:
             s = f.read().strip()
@@ -507,6 +556,27 @@ def load_state():
     except OSError:
         pass
     return None
+
+
+def load_state_explicit():
+    """区分「关灯」与「无记录」。
+
+    返回：
+        (r, g, b)  —— 上次点亮
+        None       —— 上次关灯（文件里写着 "off"）
+        False      —— 无记录 / 文件不存在
+    """
+    _migrate_state()
+    try:
+        with open(STATE_FILE) as f:
+            s = f.read().strip()
+    except OSError:
+        return False
+    if s.lower() == STATE_OFF:
+        return None
+    if re.fullmatch(r"[0-9A-Fa-f]{6}", s):
+        return int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+    return False
 
 
 def parse_hex_color(s: str) -> tuple:
@@ -702,6 +772,22 @@ def main(argv=None) -> int:
 
         elif cmd in ("state", "--state"):
             _print_read(read_state(), as_json=True)
+
+        elif cmd in ("restore", "resume"):
+            # ★ 开机恢复：按状态文件恢复上次的点亮/关灯状态。
+            #   供 systemd 服务 Yilong15pro-kbdlight-restore 调用。
+            #   退出码：0 = 已恢复；3 = 无记录（不动作）
+            _st = load_state_explicit()
+            if _st is False:
+                print("无上次状态记录，不动作。")
+                return 3
+            if _st is None:
+                off()
+                print("已恢复：关灯")
+            else:
+                set_rgb(*_st)
+                save_state(_st)          # 刷新（顺便完成旧位置迁移）
+                print(f"已恢复：点亮 {rgb_to_hex(_st)}")
 
         else:
             rgb = parse_hex_color(cmd)

@@ -1,0 +1,21 @@
+[Unit]
+Description=Restore Mechrevo Yilong 15 Pro keyboard backlight state
+Documentation=https://github.com/unicon221/Mechrevo-Yilong15pro-GM5HG0A-kbdlight
+# EC 相关：等基础系统起来、acpi_call 可用
+After=systemd-modules-load.service acpid.service
+Wants=systemd-modules-load.service
+# 开机早期 EC 会重置寄存器，所以本服务允许重跑
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/Yilong15pro-kbdlight-restore
+# EC 未就绪时脚本内部会重试；这里再给一次机会
+Restart=on-failure
+RestartSec=3
+# 状态文件在 /var/lib，本服务是 system 级，以 root 运行
+StateDirectory=Yilong15pro-kbdlight
+
+[Install]
+WantedBy=multi-user.target

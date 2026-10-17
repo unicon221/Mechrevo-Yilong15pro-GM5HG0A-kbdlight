@@ -8,15 +8,16 @@
 在 Arch Linux 上原生控制 MECHREVO 翼龙15Pro（Uniwill GM5HG0A）键盘 RGB 背光。
 无需 Windows、无需厂商驱动。
 
-> **v0.3** — 桌面集成：`.desktop` 入口 + hicolor 图标，装完即出现在应用菜单。
+> **v0.4** — 开机自动恢复上次灯光状态（关灯后重启不再变亮）。
 > 见 [更新记录](#更新记录)。
 
-包含两部分：
+包含：
 
 | 组件 | 说明 |
 |------|------|
 | `Yilong15pro-kbdlight.py` | 命令行工具 + 可 import 的 Python 模块（纯标准库）|
 | `Yilong15pro-kbdlight-gui.py` | 图形界面（PySide6 / Qt6），普通用户运行，适合 KDE/Wayland |
+| `Yilong15pro-kbdlight-restore` | 开机恢复脚本（被 systemd 服务调用）|
 
 ## 关键：协议
 
@@ -159,9 +160,10 @@ git clone https://github.com/unicon221/Mechrevo-Yilong15pro-GM5HG0A-kbdlight
 cd Mechrevo-Yilong15pro-GM5HG0A-kbdlight
 makepkg -si                 # 构建并安装
 sudo Yilong15pro-kbdlight-setup-sudo    # 一次性写入免密 sudo 规则
+sudo systemctl enable --now Yilong15pro-kbdlight-restore.service  # 开机恢复
 ```
 
-包会装到 `/usr/bin/{Yilong15pro-kbdlight,Yilong15pro-kbdlight-gui,Yilong15pro-kbdlight-setup-sudo}`，
+包会装到 `/usr/bin/{Yilong15pro-kbdlight,Yilong15pro-kbdlight-gui,Yilong15pro-kbdlight-setup-sudo,Yilong15pro-kbdlight-restore}`，
 同时安装**桌面入口与图标**（应用菜单里搜「键盘背光」），
 文档在 `/usr/share/doc/Yilong15pro-kbdlight/`。卸载：`sudo pacman -R Yilong15pro-kbdlight`。
 
@@ -170,6 +172,7 @@ sudo Yilong15pro-kbdlight-setup-sudo    # 一次性写入免密 sudo 规则
 ```bash
 ./install.sh                 # 装 CLI + GUI + 桌面入口/图标 + 免密规则
 ./install.sh --cli-only      # 只装 CLI
+./install.sh --enable-service # 同时启用开机自动恢复
 ./install.sh --uninstall     # 卸载
 ```
 
@@ -233,10 +236,52 @@ GUI 以**普通用户**运行，通过 `sudo Yilong15pro-kbdlight` 子进程读�
 
 > 若未配置免密 sudo，GUI 会自动进入只读模式并提示。
 
+## 开机自动恢复（v0.4）
+
+**问题**：关灯后重启，键盘又亮了。
+
+**原因**：EC 在开机流程里把「默认电平」`0x076C/6D/6E` 重置成出厂值
+（实测重启前 `0 0 0` → 重启后 `0 50 50`），同时 `0x078C` 被清回 `0x00`。
+所以只写一次 `off` 无法跨重启保留。
+
+**解法**：记录状态 + 开机恢复。
+
+```bash
+sudo systemctl enable --now Yilong15pro-kbdlight-restore.service
+```
+
+状态文件在 `/var/lib/Yilong15pro-kbdlight/state`（持久，重启保留）：
+
+| 内容 | 含义 |
+|------|------|
+| `off` | 上次是关灯 |
+| `FF0000` | 上次点亮，颜色为红色 |
+
+（只存颜色无法区分「关灯」和「黑色」，所以关灯单独用 `off` 标记）
+
+服务会在开机后调用 `Yilong15pro-kbdlight-restore`，该脚本会
+**重试最多 10 次并读回校验** —— 因为 EC 在开机早期可能把值覆盖回去。
+
+管理：
+
+```bash
+systemctl status Yilong15pro-kbdlight-restore
+journalctl -u Yilong15pro-kbdlight-restore -b   # 看本次开机的恢复日志
+sudo systemctl disable Yilong15pro-kbdlight-restore   # 不想要就关掉
+```
+
+手动恢复（不重启）：
+
+```bash
+sudo Yilong15pro-kbdlight restore
+```
+
 ## 文件
 
 - `Yilong15pro-kbdlight.py` — 命令行工具 / 模块（纯 Python 标准库）
 - `Yilong15pro-kbdlight-gui.py` — 图形界面（PySide6）
+- `Yilong15pro-kbdlight-restore` — 开机恢复脚本
+- `Yilong15pro-kbdlight-restore.service` — systemd 服务（开机自动恢复）
 - `Yilong15pro-kbdlight.desktop` — 桌面入口（应用菜单）
 - `Yilong15pro-kbdlight.svg` / `icons/` — 图标（SVG 源 + 8 种 PNG 尺寸）
 - `PKGBUILD` — Arch Linux 包描述
@@ -263,6 +308,20 @@ GUI 以**普通用户**运行，通过 `sudo Yilong15pro-kbdlight` 子进程读�
   但对普通单色键盘机型可能无效果。
 
 ## 更新记录
+
+### v0.4
+
+- **开机自动恢复**。关灯后重启不再变亮。
+  根因：EC 在开机流程里把默认电平 `0x076C/6D/6E` 重置为出厂值
+  （实测 `0 0 0` → `0 50 50`），并把 `0x078C` 清回 `0x00`。
+  - 状态文件从 `/run`（tmpfs，重启即失）搬到 `/var/lib/Yilong15pro-kbdlight/state`
+  - 状态能区分「关灯」（`off`）与「点亮」；同一条命令写入，首次读写自动迁移旧文件
+  - `off()` 现在也记录状态（以前只记录点亮）
+  - 新增 `restore` 子命令
+  - 新增 `Yilong15pro-kbdlight-restore.service`：开机后重试最多 10 次，
+    每次读回校验（EC 早期会覆盖寄存器，单次写入不可靠）
+- `install.sh` 新增 `--enable-service`；卸载时自动停服务
+- PKGBUILD 加 `post_install` 提示；装上 restore 脚本与服务
 
 ### v0.3
 

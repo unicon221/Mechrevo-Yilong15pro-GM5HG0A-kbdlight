@@ -4,6 +4,7 @@
 # 用法：
 #   ./install.sh              # 安装 CLI + GUI + 免密 sudo 规则
 #   ./install.sh --cli-only   # 只装 CLI
+#   ./install.sh --enable-service    # 同时启用开机自动恢复
 #   ./install.sh --uninstall  # 卸载
 #
 # 需要 root（脚本内部调用 sudo）。
@@ -27,9 +28,11 @@ die()  { printf '\033[1;31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 
 CLI_ONLY=0
 UNINSTALL=0
+ENABLE_SERVICE=0
 for a in "$@"; do
   case "$a" in
     --cli-only)  CLI_ONLY=1 ;;
+    --enable-service) ENABLE_SERVICE=1 ;;
     --uninstall) UNINSTALL=1 ;;
     -h|--help)
       sed -n '3,9p' "$0" | sed 's/^# \?//'
@@ -43,7 +46,14 @@ done
 # ---------------------------------------------------------------------------
 if (( UNINSTALL )); then
   say "卸载 Yilong15pro-kbdlight"
+  # 先停服务，避免卸载后服务报错
+  if command -v systemctl >/dev/null; then
+    sudo systemctl disable --now Yilong15pro-kbdlight-restore.service 2>/dev/null || true
+    sudo rm -f /etc/systemd/system/Yilong15pro-kbdlight-restore.service
+    sudo systemctl daemon-reload 2>/dev/null || true
+  fi
   sudo rm -f "$BIN_DIR/Yilong15pro-kbdlight" "$BIN_DIR/Yilong15pro-kbdlight-gui"
+  sudo rm -f "$BIN_DIR/Yilong15pro-kbdlight-restore"
   sudo rm -f "$SUDOERS"
   sudo rm -f /usr/share/applications/Yilong15pro-kbdlight.desktop
   sudo rm -f /usr/share/icons/hicolor/scalable/apps/Yilong15pro-kbdlight.svg
@@ -104,6 +114,27 @@ fi
 # ---------------------------------------------------------------------------
 say "安装 CLI  ->  $BIN_DIR/Yilong15pro-kbdlight"
 sudo install -m 755 "$HERE/Yilong15pro-kbdlight.py" "$BIN_DIR/Yilong15pro-kbdlight"
+
+# ---------------------------------------------------------------------------
+# 安装开机恢复（脚本 + systemd 服务）
+# ---------------------------------------------------------------------------
+if [ -f "$HERE/Yilong15pro-kbdlight-restore" ]; then
+  say "安装开机恢复脚本  ->  $BIN_DIR/Yilong15pro-kbdlight-restore"
+  sudo install -m 755 "$HERE/Yilong15pro-kbdlight-restore" "$BIN_DIR/Yilong15pro-kbdlight-restore"
+
+  if [ -f "$HERE/Yilong15pro-kbdlight-restore.service" ] && command -v systemctl >/dev/null; then
+    say "安装 systemd 服务  ->  /etc/systemd/system/"
+    sudo install -Dm644 "$HERE/Yilong15pro-kbdlight-restore.service" \
+         /etc/systemd/system/Yilong15pro-kbdlight-restore.service
+    sudo systemctl daemon-reload
+    if (( ENABLE_SERVICE )); then
+      sudo systemctl enable --now Yilong15pro-kbdlight-restore.service
+      say "已启用开机自动恢复 (systemctl disable 可关闭)"
+    else
+      say "启用开机恢复: sudo systemctl enable --now Yilong15pro-kbdlight-restore.service"
+    fi
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # 安装 GUI（可选）

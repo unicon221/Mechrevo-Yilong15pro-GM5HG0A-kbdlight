@@ -27,7 +27,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.3"
+__version__ = "0.4"
 
 import json
 import os
@@ -550,8 +550,8 @@ class KbdLightWindow(QMainWindow):
         """点亮：恢复关灯前的颜色与亮度档。
 
         ★ 不再写死最高亮度 —— 用 _last_level 记住关灯前的滑条档位。
-        ★ 不用 kbdlight.load_state()：那个文件（/run/Yilong15pro-kbdlight.last）由 root
-          写，普通用户读不到。颜色改从 EC 回读（或者用意图色）。
+        ★ 不用 kbdlight.load_state()：那个文件（/var/lib/Yilong15pro-kbdlight/state）
+          由 root 写，普通用户读不到。颜色改从 EC 回读（或者用意图色）。
         """
         if self.read_only:
             return

@@ -17,7 +17,7 @@
 #   · 包名带 Yilong15pro 前缀是为了避开 AUR 上同名的 MacBook 工具 kbdlight。
 
 pkgname=Yilong15pro-kbdlight
-pkgver=0.3
+pkgver=0.4
 pkgrel=1
 pkgdesc="Keyboard RGB backlight control for Mechrevo Yilong 15 Pro (GM5HG0A / Uniwill EC) on Linux"
 arch=('any')
@@ -39,13 +39,19 @@ sha256sums=('SKIP')
 
 package() {
     # GitHub 的 tarball 顶层目录名是 <repo>-<tag>，
-    # 即 Mechrevo-Yilong15pro-GM5HG0A-kbdlight-0.3
+    # 即 Mechrevo-Yilong15pro-GM5HG0A-kbdlight-0.4
     cd "$srcdir/$_repo-$pkgver"
 
     install -Dm755 Yilong15pro-kbdlight.py \
         "$pkgdir/usr/bin/Yilong15pro-kbdlight"
     install -Dm755 Yilong15pro-kbdlight-gui.py \
         "$pkgdir/usr/bin/Yilong15pro-kbdlight-gui"
+
+    # 开机恢复脚本 + systemd 服务
+    install -Dm755 Yilong15pro-kbdlight-restore \
+        "$pkgdir/usr/bin/Yilong15pro-kbdlight-restore"
+    install -Dm644 Yilong15pro-kbdlight-restore.service \
+        "$pkgdir/usr/lib/systemd/system/Yilong15pro-kbdlight-restore.service"
 
     # 主模块的 .py 副本 —— 供 `import yilong_kbdlight` 使用。
     # 放在 /usr/lib/（与 site-packages 同级结构无关），GUI 会用
@@ -108,4 +114,25 @@ else
     exit 1
 fi
 EOS
+}
+
+post_install() {
+    cat <<'EOM'
+
+  Yilong15pro-kbdlight 已安装。
+
+  一次性配置（免密 sudo，普通用户跑 GUI 需要）：
+      sudo Yilong15pro-kbdlight-setup-sudo
+
+  开机自动恢复上次灯光状态：
+      sudo systemctl enable --now Yilong15pro-kbdlight-restore.service
+
+  图形界面：应用菜单搜「键盘背光」，或运行 Yilong15pro-kbdlight-gui
+  命令行  ：Yilong15pro-kbdlight ff0000
+
+EOM
+}
+
+post_upgrade() {
+    post_install
 }

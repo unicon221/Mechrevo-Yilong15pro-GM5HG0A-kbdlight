@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# Yilong15pro-kbdlight-restore —— 开机恢复上次键盘背光状态
+#
+# 由 systemd 服务 Yilong15pro-kbdlight.service 调用。
+# 也可手动运行（需要 root）。
+#
+# 行为：
+#   上次关灯  -> 保持全灭
+#   上次点亮  -> 恢复当时的颜色
+#   无记录    -> 不动作（退出码 3）
+#
+# 为什么要等：EC 在开机早期会重置 0x076C/6D/6E（默认电平）和 0x078C，
+# 太早执行会被后续初始化覆盖，所以循环重试直到生效。
+set -uo pipefail
+
+BIN="/usr/bin/Yilong15pro-kbdlight"
+STATE_DIR="/var/lib/Yilong15pro-kbdlight"
+STATE_FILE="$STATE_DIR/state"
+
+log() { echo "[kbdlight-restore] $*"; }
+
+[ -x "$BIN" ] || BIN="$(command -v Yilong15pro-kbdlight)" || {
+    log "找不到 Yilong15pro-kbdlight，退出"
+    exit 1
+}
+
+# ---- 等 acpi_call 模块 ----
+for i in $(seq 1 30); do
+    [ -e /proc/acpi/call ] && break
+    modprobe acpi_call 2>/dev/null
+    sleep 0.3
+done
+[ -e /proc/acpi/call ] || { log "acpi_call 不可用，退出"; exit 1; }
+
+# ---- 等状态文件（首次安装时可能不存在）----
+[ -f "$STATE_FILE" ] || { log "无状态文件，不动作"; exit 3; }
+
+# ---- 重试直到 EC 不再把值覆盖回去 ----
+# EC 在开机流程里会重置默认电平，所以多试几次；
+# 每次写完读回校验，连续两次一致才算成功。
+desired="$(tr -d '[:space:]' < "$STATE_FILE")"
+# "off" 保持原样；颜色统一转大写（只对十六进制部分）
+if [ "$desired" != "off" ] && [ "$desired" != "OFF" ]; then
+    desired="$(echo "$desired" | tr 'a-f' 'A-F')"
+else
+    desired="off"
+fi
+
+ok=0
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    out="$("$BIN" restore --no-sudo 2>&1)"
+    rc=$?
+    if [ $rc -eq 3 ]; then
+        log "无记录，不动作"
+        exit 3
+    fi
+    if [ $rc -ne 0 ]; then
+        log "第 $attempt 次执行失败（rc=$rc）: $out"
+        sleep 1
+        continue
+    fi
+
+    # 读回校验
+    sleep 0.5
+    cur="$("$BIN" read --json --no-sudo 2>/dev/null)"
+    if [ -z "$cur" ]; then
+        sleep 1
+        continue
+    fi
+
+    if [ "$desired" = "off" ]; then
+        # 期望全灭：三个电平都必须是 0
+        if echo "$cur" | grep -qE '"levels":\s*\[\s*0,\s*0,\s*0\s*\]'; then
+            log "已确认全灭"
+            ok=1
+            break
+        fi
+    else
+        # 期望点亮：至少有一个电平非 0，且不是全灭
+        if ! echo "$cur" | grep -qE '"levels":\s*\[\s*0,\s*0,\s*0\s*\]'; then
+            log "已确认点亮"
+            ok=1
+            break
+        fi
+    fi
+
+    log "第 $attempt 次执行后状态不符，重试…"
+    sleep 1
+done
+
+if [ $ok -eq 1 ]; then
+    log "完成（期望: $desired）"
+    exit 0
+fi
+
+log "重试多次仍未生效（期望: $desired）"
+exit 1
